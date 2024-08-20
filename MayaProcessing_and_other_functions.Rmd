@@ -1,0 +1,1143 @@
+---
+title: "MayaProcessing & other functions"
+author: "Maxime Durand"
+date: "01/07/2020"
+output:
+  html_document:
+    theme: sandstone
+    highlight: kate
+    fig_height: 4
+    fig_width: 8
+    toc: true
+    toc_float: true
+    toc_depth: 6
+---
+
+**A set of functions to process data from the Maya 2000 Pro array spectroradiometer.**  
+
+***
+
+## How to use this document
+   
+***
+   
+* **In order to use this document, you should copy and paste the code for the functions that you wish to use into a new script file of your choice.**  
+  
+* **It it also important to import the libraries needed (see below, in *Necessary packages*).**  
+  
+* **Finally, you should copy the line below and change the username to fit the one on your computer. The username is usually the one you type to log in the computer. It can be found, for example, on the path to the desktop: *C:/Users/**[myUsername]**/Desktop/*. **
+
+```{r}
+myUsername <- "Localadmin_durandma"
+```
+
+
+## Necessary packages
+**Here is a list of the necessary packages to run the functions properly:**
+```{r, message = FALSE, warning = FALSE}
+library(xlsx)
+library(photobiology)
+library(photobiologyWavebands)
+library(photobiologyPlants)
+library(ooacquire)
+library(ggplot2)
+library(reshape)
+library(fda)
+```
+
+## Main processing
+
+### MayaProcessing (I) {.tabset}
+This function has for arguments: **Folder**, **subFolder** and **User** (as many others further down also do). 
+
+* **User** is the username used in the computer to access the correct path to the dropbox folder. 
+* **Folder** is the name of the measurement folder in *'C:/Users/**[myUsername]**/Dropbox/SpecS/Maya2020/Scans2020'*
+* **subFolder** the subfolder of interest in it (if none, type two double quotes instead: "").
+* **Year** is the year when the measurements were taken. If *Year = 2020* (the default), the folders used will be: *'C:/Users/**[myUsername]**/Dropbox/SpecS/Maya2020/ScansOut2020'* and *'C:/Users/**[myUsername]**/Dropbox/SpecS/Maya2020/Scans2020'*
+
+For a wider application, the *inFolder* and *outFolder* can be changed (e.g. for processing 2016 scans). Similarly for the correction method used to process the scans.
+
+The function uses dark files as identifiers for each set of spectra. The function assumes that multiscans (several scans associated with a single dark file) have at least a "00" in their name to identify them. This means that if running over 1000 scans in a set the default 5 padding digits is insufficient and an extra digit should be added. **The function *BSWF.irrad.calc* has to be in R's environment for the function to run properly, in addition to the packages. **
+
+Two files are produced and written in *'C:/Users/**[myUsername]**/Dropbox/SpecS/Maya2020/ScansOut2020'* with the same **Folder** and **subFolder** architecture. An irradiance file with every spectrum taken (xxx_irrad.txt file) and a summary of several biological spectrum weighing functions, spectral regions and spectral photon ratios given in energy and photon units (BSWF, xxx_BSWF.txt file). The BSWF file can also be printed in .xls if the number of scans is less than 101.
+
+#### Function
+```{r, eval = F}
+MayaProcessing <- function(subFolder, Folder, User = myUsername, Year = 2020)
+{
+  inFolder <- paste0("C:/Users/", User, "/Dropbox/SpecS/Maya", Year, "/Scans", Year, "/")
+  outFolder <- paste0("C:/Users/", User, "/Dropbox/SpecS/Maya", Year, "/ScansOut", Year, "/")
+  
+  darkFiles <- list.files(path = paste0(inFolder, "/", Folder, "/", subFolder, "/"), pattern = paste0("dark.txt"))
+  filterFiles <- list.files(path = paste0(inFolder, "/", Folder, "/", subFolder, "/"), pattern = paste0("PC.txt"))
+  
+  if(length(darkFiles) != length(filterFiles)){
+    print(darkFiles) ; print(filterFiles)
+    stop("The number of dark files differs from the number of filter files")
+  }
+  
+  iOut <- paste0(outFolder, Folder, "/", subFolder, "/")
+  dir.create(iOut, recursive = T)
+  
+  iSet <- 1
+  for (iSet in 1:length(darkFiles))
+  {
+    # If long spectrum, only use 1st one
+    namePattern <- substr(darkFiles[iSet], start=1, stop=nchar(darkFiles[iSet])-8)
+    if(length(grep("long00", namePattern, fixed = T)) > 0){
+      measFiles <- list.files(path = paste0(inFolder, Folder, "/", subFolder, "/"), pattern = paste0(namePattern, "00"))[1]
+    } else {
+      measFiles <- list.files(path = paste0(inFolder, Folder, "/", subFolder, "/"), pattern = paste0(namePattern, "00"))
+    }
+    # If only one spectrum, there is no "00"
+    if(length(measFiles) == 0){
+      measFiles <- list.files(path = paste0(inFolder, Folder, "/", subFolder, "/"), paste0(namePattern, ".txt"))
+    }
+    
+    BSWF.out <- NULL
+    irrad.out <- NULL
+    
+    #iMeas <- measFiles[1]
+    for(iMeas in measFiles)
+    {
+      irrad.spct <- NULL
+      irrad <- list(light = paste0(inFolder, Folder, "/", subFolder, "/", iMeas),
+                    filter = paste0(inFolder, Folder, "/", subFolder, "/", filterFiles[iSet]),
+                    dark = paste0(inFolder, Folder, "/", subFolder, "/", darkFiles[iSet]))
+      
+# The descriptor will change according to the date of measurement relative to the date of calibration.
+# The appropriate correction method may be "sun" "ylianttila" "none" or "simple"
+      irrad.spct <- s_irrad_corrected(x = irrad,
+                                      descriptor = which_descriptor("2018-12-23",  MAYP112785_descriptors),
+                                      correction.method = MAYP112785_sun.mthd)
+      # Approximation of NA
+      if(sum(is.na(irrad.spct$s.e.irrad)) > 0){
+        y<-irrad.spct$s.e.irrad
+        x<-irrad.spct$w.length
+        where.na<-is.na(y)
+        xout<-x[where.na]
+        out<-approx(x=x,y=y,xout=xout,f=0,method="constant")
+        y[where.na]<-out$y
+        irrad.spct$s.e.irrad<-y
+      }
+      ## The trimming to appropriate wavelength will depend on whether sunlight
+      ## or artificial light is measured and the range of calibration.
+      ## Hinges deduce interpolation errors at the spectral limits
+      irrad.spct <- trim_wl(irrad.spct, range = c(290, 900), use.hinges = FALSE, fill = 0)
+      ## The smoothing method "sun" "custom" "supsmu" "lowess" must be chosen and
+      ## changed to match the measurement.
+      irrad.spct <- smooth_spct(irrad.spct, method = "custom")
+      
+      # Take 2 columns from out and then remove it
+      dfMeas <- data.frame(wavelength = irrad.spct$w.length, irradiance=irrad.spct$s.e.irrad)
+      MeasBSWF <- BSWF.irrad.calc(irrad.spct)
+      
+      BSWF.out <- cbind(BSWF.out, MeasBSWF$value)
+      irrad.out <- cbind(irrad.out, dfMeas$irradiance)
+    }
+    
+    colNames <- substring(measFiles, 1, nchar(measFiles) - 4)
+    irrad.out <- data.frame(dfMeas$wavelength, irrad.out)
+    names(irrad.out) <- c("wavelength", colNames)
+    BSWF.out <- data.frame(MeasBSWF$spectra, BSWF.out)
+    names(BSWF.out) <- c("spectra", colNames)
+
+    write.table(BSWF.out, paste0(iOut, colNames[1], "_BSWF.txt"), row.names = FALSE)
+    write.table(irrad.out, paste0(iOut, colNames[1], "_irrad.txt"), row.names = FALSE)
+    if(length(measFiles) < 101){
+      write.xlsx(BSWF.out, paste0(iOut, colNames[1], "_BSWF.xls"), row.names = FALSE)
+    }
+  }
+}
+```
+
+#### Examples
+  
+**Here is the example input file: 100 spectra with a dark and polycarbonate (PC) filter file**  
+![picture](Rmd_images/MayaProcessingOtherFunctions00.png)  
+
+***
+
+**Here are the three files processed at the end in the ScanOut folder**  
+![picture](Rmd_images/MayaProcessingOtherFunctions01.png)  
+
+***
+
+**Here is an example of the BSWF file**  
+![picture](Rmd_images/MayaProcessingOtherFunctions02.png)  
+
+***
+
+**Here is an example of the irradiance file**  
+![picture](Rmd_images/MayaProcessingOtherFunctions03.png)  
+
+### MayaProcessing (II) {.tabset}
+This function uses similar arguments and builds on the last function. 
+
+A set of files are processed & written.. The **_depthirrad.txt** file shows the depth of each curve calculated by functional data analysis (FDA). The mean irradiance for each curve is also calculated. The median curve has the higher depth value.
+
+From this the average curve and the deepest (or median) curve are selected. A **xxx_deepestirrad.txt** and **xxx_deepestBSWF.txt** as well as a **xxx_averageirrad.txt** and **xxx_averageBSWF.txt** files are written for each measurment inside the **subFolder**. 
+
+A plot of all the scan in each measurment inside the **subFolder** is printed in the *'~/figures'* subfolder. 
+
+Finally, a **xxx_alldeepestirrad.txt** file is written summarizing each deepest curve for every measurement-set inside the **subFolder** (and likewise for BSWF and for the average curves).
+
+#### Function
+```{r eval = FALSE}
+MayaProcessing2 <- function(subFolder, Folder, User = myUsername, Year = 2020)
+{
+  inFolder <- paste0("C:/Users/", User, "/Dropbox/SpecS/Maya", Year, "/Scans", Year, "/")
+  outFolder <- paste0("C:/Users/", User, "/Dropbox/SpecS/Maya", Year, "/ScansOut", Year, "/")
+  
+  darkFiles <- list.files(path = paste0(inFolder, "/", Folder, "/", subFolder, "/"), pattern = paste0("dark.txt"))
+  filterFiles <- list.files(path = paste0(inFolder, "/", Folder, "/", subFolder, "/"), pattern = paste0("PC.txt"))
+  
+  outPath <- paste0(outFolder, Folder, "/", subFolder, "/")
+  figPath <- paste0(outFolder, Folder, "/", subFolder, "/Figures/")
+  dir.create(figPath, recursive = TRUE)
+  
+  allDeepestNames = allDeepestIrrad = allDeepestBSWF = NULL
+  allAvgNames = allAvgIrrad = allAvgBSWF = NULL
+  
+  iSet = 8
+  for (iSet in 1:length(darkFiles))
+  {
+    # If long spectrum, only use 1st one
+    namePattern <- substr(darkFiles[iSet], start=1, stop=nchar(darkFiles[iSet])-8)
+    if(length(grep("long00", namePattern, fixed = T)) > 0){
+      measFiles <- list.files(path = paste0(inFolder, Folder, "/", subFolder, "/"), pattern = paste0(namePattern, "00"))[1]
+    } else {
+      measFiles <- list.files(path = paste0(inFolder, Folder, "/", subFolder, "/"), pattern = paste0(namePattern, "00"))
+    }
+    # If only one spectrum, there is no "00"
+    if(length(measFiles) == 0){
+      measFiles <- list.files(path = paste0(inFolder, Folder, "/", subFolder, "/"), paste0(namePattern, ".txt"))
+    }
+    
+    # Read data
+    colNames <- substring(measFiles, 1, nchar(measFiles) - 4)
+    irrad.out <- read.table(paste0(outFolder, Folder, "/", subFolder, "/", colNames[1],"_irrad.txt"), header = T)
+    BSWF.out <- read.table(paste0(outFolder, Folder, "/", subFolder, "/", colNames[1],"_BSWF.txt"), header = T)
+
+    avgIrradName <- paste0(colNames[1], "_averageirrad.txt")
+    avgBSWFName.xls <- paste0(colNames[1], "_averageBSWF.xls")
+    avgBSWFName.txt <- paste0(colNames[1], "_averageBSWF.txt")
+    deepestIrradName <- paste0(colNames[1], "_deepestirrad.txt")
+    deepestBSWFName.xls <- paste0(colNames[1], "_deepestBSWF.xls")
+    deepestBSWFName.txt <- paste0(colNames[1], "_deepestBSWF.txt")
+    depthIrradName.xls <- paste0(colNames[1], "_depthirrad.xls")
+    depthIrradName.txt <- paste0(colNames[1], "_depthirrad.txt")
+    
+    # Find deepest curve only for data with more than one measurement
+    if(ncol(irrad.out) > 2){
+      
+      # fda won't run of only 2 measurments
+      if(ncol(irrad.out) == 3){
+        fda.out <- data.frame(depth = c(0,0))
+      } else {
+        fda.out <- fbplot(fit = irrad.out[,-1], x = irrad.out[,1], plot = FALSE)
+      }
+      dfDepth <- data.frame(indices = 0:(ncol(irrad.out[,-1]) - 1), depth = fda.out$depth, ave = apply(irrad.out[,-1], 2, mean, na.rm = T))
+      
+      dfDepth.ordered <- dfDepth[order(dfDepth$depth, decreasing = TRUE),]
+      dfDepth.ordered2 <- dfDepth[order(dfDepth$ave, decreasing = TRUE),]
+      
+      # We add 2 to index because measurements start from 0 and we insert 'wavelength'
+      # rank <- quantile(1:ncol(irrad.out[,-1]), probs = percentile)
+      # indexpercentile <- dfDepth.ordered2$indices[rank] + 2
+      indexpercentile <- dfDepth.ordered$indices[1] + 2
+      
+      ave.irrad <- data.frame(wavelength = irrad.out[,1], average = apply(irrad.out[,-1], 1, mean, na.rm = T))
+      ave.BSWF <- data.frame(spectra = BSWF.out[,1], average = apply(BSWF.out[,-1], 1, mean, na.rm = T))
+      
+      write.xlsx(BSWF.out[,c(1,indexpercentile)], paste0(outPath, deepestBSWFName.xls), row.names = FALSE)
+      write.table(BSWF.out[,c(1,indexpercentile)], paste0(outPath, deepestBSWFName.txt), row.names = FALSE)
+      write.table(irrad.out[,c(1,indexpercentile)], paste0(outPath, deepestIrradName), row.names = FALSE)
+      write.xlsx(dfDepth.ordered2, paste0(outPath, depthIrradName.xls), row.names = FALSE)
+      write.table(dfDepth.ordered2, paste0(outPath, depthIrradName.txt), row.names = FALSE)
+      write.xlsx(ave.BSWF, paste0(outPath, avgBSWFName.xls), row.names = FALSE)
+      write.table(ave.BSWF, paste0(outPath, avgBSWFName.txt), row.names = FALSE)
+      write.table(ave.irrad, paste0(outPath, avgIrradName), row.names = FALSE)
+      
+    } else if(ncol(irrad.out) == 2){
+      
+      write.xlsx(BSWF.out, paste0(outPath, deepestBSWFName.xls), row.names = FALSE)
+      write.table(BSWF.out, paste0(outPath, deepestBSWFName.txt), row.names = FALSE)
+      write.table(irrad.out, paste0(outPath, deepestIrradName), row.names = FALSE)
+      write.xlsx(BSWF.out, paste0(outPath, avgBSWFName.xls), row.names = FALSE)
+      write.table(BSWF.out, paste0(outPath, avgBSWFName.txt), row.names = FALSE)
+      write.table(irrad.out, paste0(outPath, avgIrradName), row.names = FALSE)
+      
+    }
+    
+    # Reading deepest .txt file   
+    tempDeepestIrrad <- read.table(paste0(outPath, deepestIrradName), header = TRUE)
+    allDeepestIrrad <- cbind(allDeepestIrrad, tempDeepestIrrad[,2])
+    allDeepestNames<-c(allDeepestNames,colnames(tempDeepestIrrad)[2])
+    
+    # Reading deepest BSWF .xls file     
+    tempDeepestBSWF <- read.table(paste0(outPath, deepestBSWFName.txt), header = TRUE)
+    allDeepestBSWF <- cbind(allDeepestBSWF, tempDeepestBSWF[,2])
+    
+    # Reading average file
+    tempAvgIrrad <- read.table(paste0(outPath, avgIrradName), header = TRUE)
+    allAvgIrrad <- cbind(allAvgIrrad, tempAvgIrrad[,2])
+    allAvgNames <- c(allAvgNames, colnames(tempAvgIrrad)[2])
+
+    # Reading average BSWF file     
+    tempAvgBSWF <- read.table(paste0(outPath, avgBSWFName.txt), header = TRUE)
+    allAvgBSWF <- cbind(allAvgBSWF, tempAvgBSWF[,2])
+    
+    # Figs
+    irrad.out.ggplot <- melt(irrad.out[,2:ncol(irrad.out)]) 
+    irrad.out.ggplot$wavelength <- rep(irrad.out$wavelength, ncol(irrad.out) - 1)
+    
+    if(is.null(irrad.out.ggplot$variable)){
+      irrad.out.ggplot$variable<-"A"
+    } 
+      
+    pp <- ggplot(irrad.out.ggplot, aes(x=wavelength, y = value, col = variable))
+    pp <- pp + geom_line() + coord_cartesian(xlim = c(290,900)) + theme(legend.position = "none")
+    pp <- pp + scale_y_continuous(name = expression("Spectral energy irradiance "~E(lambda)~" ("~W*m^-2*nm^-1~")"))
+    pp <- pp + scale_x_continuous(name = "Wavelength (nm)")
+    pp <- pp + geom_line(data = irrad.out.ggplot[irrad.out.ggplot$variable == names(tempDeepestIrrad)[2],], aes(x = wavelength, y = value), col = "black", lwd = 1)
+    pp <- pp + geom_line(data = tempAvgIrrad, aes_string(x = names(tempAvgIrrad)[1], y = names(tempAvgIrrad)[2]), col = "black")
+    pp <- pp + theme_bw(base_size = 20, base_family = "") + theme(legend.position = "none")
+    
+    jpegName <- paste0(figPath, Folder, subFolder, colNames[1], ".jpg")
+    graphics.off()
+    jpeg(filename = jpegName, width = 800*1.5, height = 800)
+    print(pp)
+    dev.off()
+  }
+  
+  allDeepestIrrad <- cbind(tempDeepestIrrad[,1], allDeepestIrrad)
+  colnames(allDeepestIrrad)<-c("wavelength", allDeepestNames)
+  fileName <- paste0(outPath, Folder, subFolder, "_alldeepestirrad.txt")
+  write.table(allDeepestIrrad, file = fileName ,row.names = FALSE)
+  
+  allDeepestBSWF <- data.frame(spectra = tempDeepestBSWF[,1], allDeepestBSWF)
+  names(allDeepestBSWF) <- c("spectra", allDeepestNames)
+  fileName.xls <- paste0(outPath, Folder, subFolder, "_alldeepestBSWF.xls")
+  fileName.txt <- paste0(outPath, Folder, subFolder, "_alldeepestBSWF.txt")
+  write.xlsx(allDeepestBSWF, file = fileName.xls, row.names = FALSE)
+  write.table(allDeepestBSWF, file = fileName.txt, row.names = FALSE)
+  
+  allAvgIrrad <- cbind(tempAvgIrrad[,1], allAvgIrrad)
+  colnames(allAvgIrrad) <- c("wavelength", allDeepestNames)
+  fileName <- paste0(outPath, Folder, subFolder, "_allaverageirrad.txt")
+  write.table(allAvgIrrad, file = fileName, row.names = FALSE)
+  
+  allAvgBSWF <- data.frame(spectra = tempAvgBSWF[,1], allAvgBSWF)
+  names(allAvgBSWF) <- c("spectra", allDeepestNames)
+  fileName.xls <- paste0(outPath, Folder, subFolder, "_allaverageBSWF.xls")
+  fileName.txt <- paste0(outPath, Folder, subFolder, "_allaverageBSWF.txt")
+  write.xlsx(allAvgBSWF, file = fileName.xls, row.names = FALSE)
+  write.table(allAvgBSWF, file = fileName.txt, row.names = FALSE)
+}
+```
+
+#### Example
+        
+**Here is a summary of all the files written**    
+![picture](Rmd_images/MayaProcessingOtherFunctions04.png)   
+
+***
+
+**Here is an example of the figure created. The colours are arbitrarily distributed. The thick black line is the median (deepest) curve. The thin black line is the average curve. It sometimes can not be discerned from the thick black curve)**    
+![picture](Rmd_images/MayaProcessingOtherFunctions05.png)    
+
+***
+
+**Here is an example of the xxx_depthirrad.txt file**    
+![picture](Rmd_images/MayaProcessingOtherFunctions06.png)    
+
+***
+
+**Here is an example of the xxx_deepestirrad.txt file. The deepest curve is the 50th ( so 00049, remember numbering starts at 0)**    
+![picture](Rmd_images/MayaProcessingOtherFunctions07.png)    
+      
+#### Alternative function (only plots figures)    
+
+**The same function but it only takes care of printing the figures. Useful if the deepest/average curves are not of interest but the figures are.**
+```{r, eval = FALSE}
+plotMaya <- function(subFolder, Folder, User = myUsername, Year = 2020)
+{
+  inFolder <- paste0("C:/Users/", User, "/Dropbox/SpecS/Maya", Year, "/Scans", Year, "/")
+  outFolder <- paste0("C:/Users/", User, "/Dropbox/SpecS/Maya", Year, "/ScansOut", Year, "/")
+  
+  darkFiles <- list.files(path = paste0(inFolder, "/", Folder, "/", subFolder, "/"), pattern = paste0("dark.txt"))
+  filterFiles <- list.files(path = paste0(inFolder, "/", Folder, "/", subFolder, "/"), pattern = paste0("PC.txt"))
+  
+  outPath <- paste0(outFolder, Folder, "/", subFolder, "/")
+  figPath <- paste0(outFolder, Folder, "/", subFolder, "/Figures/")
+  dir.create(figPath, recursive = TRUE)
+  
+  for (iSet in 1:length(darkFiles))
+  {
+    # If long spectrum, only use 1st one
+    namePattern <- substr(darkFiles[iSet], start=1, stop=nchar(darkFiles[iSet])-8)
+    if(length(grep("long", namePattern, fixed = T)) > 0){
+      measFiles <- list.files(path = paste0(inFolder, Folder, "/", subFolder, "/"), pattern = paste0(namePattern, "00"))[1]
+    } else {
+      measFiles <- list.files(path = paste0(inFolder, Folder, "/", subFolder, "/"), pattern = paste0(namePattern, "00"))
+    }
+    # If only one spectrum, there is no "00"
+    if(length(measFiles) == 0){
+      measFiles <- list.files(path = paste0(inFolder, Folder, "/", subFolder, "/"), paste0(namePattern, ".txt"))
+    }
+    
+    colNames <- substring(measFiles, 1, nchar(measFiles) - 4)
+    irrad.out <- read.table(paste0(outFolder, Folder, "/", subFolder, "/", colNames[1],"_irrad.txt"), header = T)
+    irrad.out.ggplot <- melt(irrad.out[,2:ncol(irrad.out)]) 
+    irrad.out.ggplot$wavelength <- rep(irrad.out$wavelength, ncol(irrad.out) - 1)
+    
+    if(is.null(irrad.out.ggplot$variable)){
+      irrad.out.ggplot$variable<-"A"
+    } 
+    
+    pp <- ggplot(irrad.out.ggplot, aes(x=wavelength, y = value, col = variable))
+    pp <- pp + geom_line() + coord_cartesian(xlim = c(290,900)) + theme(legend.position = "none")
+    pp <- pp + scale_y_continuous(name = expression("Spectral energy irradiance "~E(lambda)~" ("~W*m^-2*nm^-1~")"))
+    pp <- pp + scale_x_continuous(name = "Wavelength (nm)")
+    #pp <- pp + geom_line(data = irrad.out.ggplot[irrad.out.ggplot$variable == names(tempDeepestIrrad)[2],], aes(x = wavelength, y = value), col = "black")
+    #pp <- pp + geom_line(data = tempAvgIrrad, aes_string(x = names(tempAvgIrrad)[1], y = names(tempAvgIrrad)[2]), col = "black", lwd = 1)
+    pp <- pp + theme_bw(base_size = 20, base_family = "") + theme(legend.position = "none")
+    
+    jpegName <- paste0(figPath, Folder, subFolder, colNames[1], ".jpg")
+    graphics.off()
+    jpeg(filename = jpegName, width = 800*1.5, height = 800)
+    print(pp)
+    dev.off()
+  }
+}
+```
+
+### ScanAssess {.tabset}
+This function prints a table giving an assessment of the measurements to process in the given **Folder** for each subfolder. The names of each scan and the number of spectra for each measurement is given.   
+   
+The argument **Year** enables the selection of the measurment year (e.g. if *2020*, the default is selected, the **Folder** will be looked for in *~SpecS/Maya2020/Scans2020*).
+
+#### Function
+```{r}
+ScanAssess <- function(Folder, User = myUsername, Year = 2020)
+{
+  df0 <- data.frame()
+  inFolder <- paste0("C:/Users/", User, "/Dropbox/SpecS/Maya", Year, "/Scans", Year, "/")
+  
+  iSubFolder <- list.files(path = paste0(inFolder, "/", Folder))[2]
+  for(iSubFolder in  list.files(path = paste0(inFolder, "/", Folder)))
+  {
+    darkFiles <- list.files(path = paste0(inFolder, "/", Folder, "/", iSubFolder, "/"), pattern = paste0("dark.txt"))
+    if(length(darkFiles) == 0){next()}
+    
+    namePattern <- substr(darkFiles, start = 1, stop = nchar(darkFiles)-8)
+    nbFiles <- vector()
+    for(iNamePattern in 1:length(namePattern))
+    {
+      nb <- length(list.files(path = paste0(inFolder, Folder, "/", iSubFolder, "/"), pattern = paste0(namePattern[iNamePattern], "00")))
+      if(nb == 0){
+        nb <- length(list.files(path = paste0(inFolder, Folder, "/", iSubFolder, "/"), paste0(namePattern[iNamePattern], ".txt")))
+      }
+      nbFiles <- append(nbFiles, values = nb)
+      row <- c(Folder, iSubFolder, namePattern[iNamePattern], nbFiles[iNamePattern])
+      df0 <- rbind(df0, row)
+    }
+  }
+  if(length(df0) == 0){stop("No scan to assess")}
+  colnames(df0) <- c("Folder", "subFolder", "ScanName", "ScanNumber")
+  return(df0)
+}
+```
+
+#### Example
+```{r}
+ScanAssess(Folder = "2020.07.06.FI.Viikki")
+```
+
+
+### copyPCark {.tabset}
+This function is used to copy the dark and filter(PC) scan of *short* scans to *long* scans, since the long scan is often taken right after the short scan with the intent to use the dark and filter scan for both short and long scans. (ed. Matt -> when I make a long scan I also make corresponding long dark and long PC scans, these render the **short** (i.e. normal) dark and PC scans of the corresponding set obsolete)
+
+What is meant by **short scans** is the spectra typically recorded where the entire wavelength range is within the resolution measureable by the Maya (up to 60000 counts). Those referred to as **long scans** have a longer integration time *(hence their name long scans)*, often 10 times longer, to get a better irradiance resolution in the **ultraviolet waveband** particularly the UV-B which typically makes up less than 2% of the energy irradiance. Often, a consequence is that the irradiance in the visible waveband is out of range (> 60000 counts) and can't be used.
+
+In order for the MayaProcessing function to properly process the long spectrum, the name has to be **[naming pattern]+[long]+[dark/PC].txt**. That way the function can correctly identify each scan.
+
+Long and short scans can be merged together (see below). 
+
+#### Function
+```{r, eval = FALSE}
+copyPCark <- function(subFolder, Folder, User = myUsername, patten = "long", Year = 2020)
+{
+  inFolder <- paste0("C:/Users/", User, "/Dropbox/SpecS/Maya", Year, "/Scans", Year, "/")
+
+  darkFiles <- list.files(path = paste0(inFolder, "/", Folder, "/", subFolder, "/"), pattern = paste0("dark.txt"))
+  Files  <- list.files(path = paste0(inFolder, "/", Folder, "/", subFolder, "/"), pattern = paste0("long"))
+  pattern <- substring(darkFiles, 1, nchar(darkFiles)-8)
+  
+  for(iFile in Files)
+  {
+    for(iPattern in pattern)
+    {
+      if(sum(grep(iPattern, iFile)) > 0){
+        namedark <- paste0(substring(iFile, 1, nchar(iFile)-4), "dark.txt")
+        namePC <- paste0(substring(iFile, 1, nchar(iFile)-4), "PC.txt")
+        
+        file.copy(from = paste0(inFolder, Folder, "/", subFolder, "/", iPattern, "dark.txt"), to = paste0(inFolder, Folder, "/", subFolder, "/", namedark), overwrite = F)
+        file.copy(from = paste0(inFolder, Folder, "/", subFolder, "/", iPattern, "PC.txt"), to = paste0(inFolder, Folder, "/", subFolder, "/", namePC), overwrite = F)
+      }
+    }
+  }
+}
+```
+
+#### Example
+    
+**Before running the function. The short scan is named "openstart.txt", the long scan is "openstartlong.txt". The dark and filter files are named "openstartdark.txt" and "openstartPC.txt", respectively.**    
+![picture](Rmd_images/MayaProcessingOtherFunctions08.png)   
+
+***
+
+**After running the function, 2 new files are created: "openstartlongdark.txt" and "openstartlongPC.txt" which are identical copies of "openstartdark.txt" and "openstartPC.txt", only with *long* added to them in the name.**  
+![picture](Rmd_images/MayaProcessingOtherFunctions09.png)   
+
+### plotPCdark {.tabset}
+This function plots the dark and filter scans, to check if they were taken properly. **Folder**, **subFolder** and spectrum name are shown too.   
+
+The filter file is in black, the dark scan in gray. The two vertical red lines show where the irradiance is not filtered by the PC filter (i.e. where the filter scan should start to show irradiance higher than the baseline).
+
+#### Function
+```{r}
+plotPCdark <- function(subFolder, Folder, User = myUsername, Year = 2020)
+{
+  inFolder <- paste0("C:/Users/", User, "/Dropbox/SpecS/Maya", Year, "/Scans", Year, "/")
+  
+  darkFiles <- list.files(path = paste0(inFolder, "/", Folder, "/", subFolder, "/"), pattern = paste0("dark.txt"))
+  namePattern <- substring(darkFiles, 1, nchar(darkFiles)-8)
+  filterFiles <- paste0(namePattern, "PC.txt")
+  
+  for (i in 1:length(darkFiles))
+  {
+    data_dark <- read_oo_data(file = paste0(inFolder, Folder, "/", subFolder, "/", darkFiles[i]))
+    data_PC <- read_oo_data(file = paste0(inFolder, Folder, "/", subFolder, "/", filterFiles[i]))
+    
+    intTime_dark <- attributes(data_dark)$instr.settings$integ.time / 1e6
+    intTime_PC <- attributes(data_PC)$instr.settings$integ.time / 1e6
+    
+    data_dark$counts <- data_dark$counts / intTime_dark
+    data_PC$counts <- data_PC$counts / intTime_PC
+    
+    par(mfrow = c(1,1), oma = c(0,0,0,0), mar = c(4,5,1,1), bty = "L")
+    plot(-500, xaxt = "n", yaxt = "n", xlab = "", ylab = "", xlim = c(190, 1100), ylim = c(0,max(data_PC$counts)*1.1))
+    points(counts~w.length, data = data_PC, type = "l", lwd = 3, col = "black")
+    points(counts~w.length, data = data_dark, type = "l", lwd = 1, col = "gray60")
+    axis(side = 1, font = 2, cex.axis = 0.9)
+    axis(side = 2, font = 2, cex.axis = 0.9, las = 2)
+    mtext(side = 1, line = 2, text = "Wavelength (nm)", cex = 1.2)
+    mtext(side = 2, line = 3.5, text = "Counts per sec", cex = 1.2)
+    abline(v = 390, col = "red")
+    abline(v = 400, col = "red")
+    title(paste(Folder, subFolder, substring(darkFiles[i], 1, nchar(darkFiles[i])-8), sep = " | "), cex.main = 0.9)
+    
+    #readline(prompt="Press [enter] for next plot...")
+  }
+}
+```
+
+#### Example
+
+***
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+library(ooacquire)
+plotPCdark(subFolder = "Quercus", Folder = "2020.05.21.FI.Lammi")
+```
+
+## Other useful functions
+
+### BSWF.irrad.calc {.tabset}
+Not written by me but printed here for reference. Used in the **MayaProcessing** and **MayaProcessing2** function. 
+
+#### Function
+```{r}
+## Calculating all BSWF and return data frame. Not written by me.
+BSWF.irrad.calc<-function(irrad.spct)
+{
+  #'BSWF.irrad.calc' is a function
+  #spectral_irrad.data is a 'data frame' object with two columns: 'wavelength' and 'irradiance'
+  #obtained with routine 'process_maya_files' from MayaCalc' package
+  #'BSWF.irrad.calc' returns a 'data frame' object with two columns: 'spectra' and 'value'
+  #
+  # I would add this subset to avoid problems with noise in spectra for sunlight
+  # For lamps with acetate 285 or 290 should be the right wavelength
+  # 
+  #  sub_spectral_irrad.data <- subset(spectral_irrad.data, wavelength >= 295)
+  #  attach(sub_spectral_irrad.data)
+  wb_UVb <- new_waveband(300,350) # b refers to below 350 nm ##why 315nm Titta?
+  wb_UVa <- new_waveband(350,400) # a refers to above 350 nm
+  wb_IR <- new_waveband(750,900)
+  
+  value <- c(
+    e_irrad(irrad.spct, PAR()),
+    e_irrad(irrad.spct, UVB()),
+    e_irrad(irrad.spct, UVA()),
+    e_irrad(irrad.spct, wb_UVb),
+    e_irrad(irrad.spct, wb_UVa),
+    e_irrad(irrad.spct, Blue("Sellaro")),
+    e_irrad(irrad.spct, Green("Sellaro")),
+    e_irrad(irrad.spct, Red("Sellaro")),
+    e_irrad(irrad.spct, Far_red("Sellaro")),
+    e_irrad(irrad.spct, GEN_G(300)), # default normaliztion is at 300 nm, so "300" could be omitted
+    e_irrad(irrad.spct, GEN_T(300)), # default is 300 nm, but putting it as argument could help later
+    e_irrad(irrad.spct, PG(300)), # default is 300 nm, so "300" could be omitted
+    e_irrad(irrad.spct, DNA_N(300)), # default is now 300 nm, but may change to what Setlow used
+    e_irrad(irrad.spct, CIE(298)), # default here is 298 nm which should be fine
+    e_irrad(irrad.spct, FLAV(300)),  # default is 300 nm
+    e_irrad(irrad.spct, wb_IR),
+    q_irrad(irrad.spct, PAR()) * 1e6,#ppfd
+    q_irrad(irrad.spct, UVB()) * 1e6,
+    q_irrad(irrad.spct, UVA()) * 1e6,
+    q_irrad(irrad.spct, wb_UVb)* 1e6,
+    q_irrad(irrad.spct, wb_UVa)* 1e6,
+    q_irrad(irrad.spct, Blue("Sellaro"))* 1e6,
+    q_irrad(irrad.spct, Green("Sellaro"))* 1e6,
+    q_irrad(irrad.spct, Red("Sellaro"))* 1e6,
+    q_irrad(irrad.spct, Far_red("Sellaro"))* 1e6,
+    q_irrad(irrad.spct, GEN_G(300))* 1e6, # default normaliztion is at 300 nm, so "300" could be omitted
+    q_irrad(irrad.spct, GEN_T(300))* 1e6, # default is 300 nm, but putting it as argument could help later
+    q_irrad(irrad.spct, PG(300))* 1e6, # default is 300 nm, so "300" could be omitted
+    q_irrad(irrad.spct, DNA_N(300))* 1e6, # default is now 300 nm, but may change to what Setlow used
+    q_irrad(irrad.spct, CIE(298))* 1e6, # default here is 298 nm which should be fine
+    q_irrad(irrad.spct, FLAV(300))* 1e6,  # default is 300 nm    
+    q_irrad(irrad.spct, wb_IR)* 1e6,
+    q_ratio(irrad.spct, UVB(), UVA())*1000, 
+    q_ratio(irrad.spct, UVB(), PAR()) * 1000,
+    q_ratio(irrad.spct, UVA(), PAR()),
+    R_FR(irrad.spct, "Sellaro"), 
+    R_FR(irrad.spct, "Smith10"), 
+    R_FR(irrad.spct, "Smith20"), 
+    B_G(irrad.spct),
+    q_ratio(irrad.spct, Blue("Sellaro"), Red("Sellaro")),
+    Pfr_Ptot(irrad.spct))
+  
+  spectra <- c("PAR_e", "UVB_e", "UVA_e","UVb350_e","UVa350_e",
+               "Blue_e","Green_e","Red_e","Far_red_e",
+               "GEN_G_e", "GEN_T_e", "PG_e", "DNA_N_e", "CIE_e","FLAV_e","Infra_red_e",  
+               "PAR_q","UVB_q", "UVA_q","UVb350_q","UVa350_q",
+               "Blue_q","Green_q","Red_q","Far_red_q",
+               "GEN_G_q", "GEN_T_q", "PG_q", "DNA_N_q", "CIE_q","FLAV_q", "Infra_red_q",
+               "UVB_UVA", "UVB_PAR", "UVA_PAR", "R_FR_Sellaro","R_FR_Smith10","R_FR_Smith20",
+               "B_G","B_R","PhyEqi")
+  spectral_irrad_BSWF<-data.frame(spectra=spectra,value=round(value,10))
+  #detach(irrad.dataspct)
+  
+  return(spectral_irrad_BSWF)
+}
+```
+
+### mergeLong {.tabset}
+**mergeLong** merges short and long spectra taken together. The ultraviolet range is taken from the long scan while the rest of the spectrum is taken from the short scan.
+
+The function finds the long scans (columns must have *"long"* in the name) and finds similar columns with the same name pattern (but without *"long"* in the name, the function thus knows it is a *"short"* scan). 
+
+If the argument **BSWF** is true, the function return a list with  1) a data frame of the same length as the one provided, but the long scans were merged with the short ones; and 2) the BSWF table calculated from the merged long and short scans. if **BSWF** is FALSE, only the table is returned. The argument **verbose** print the RMSE of the long and short scan in the UV for each long scan.
+
+The way the merging is conducted is by calculating the percent difference between the long and short scan in the waveband 320-390nm and recalculating the long scan based on this (to correct for changes of irradiance happening between the long and short scan measurements). The merging happens between the short and the corrected long scan, at the first missing value in the long scan. 
+
+#### Function
+```{r}
+procLong <- function(df, BSWF = TRUE, verbose = TRUE)
+{
+  BSWFs <- data.frame(x = rep(0,41))
+  longCols <- grep("long", colnames(df))
+  namePattern <- gsub("long", "", colnames(df)[longCols]) 
+  for (iCOL in 1:length(longCols))
+  {
+    for (iPattern in grep(namePattern[iCOL], colnames(df)))
+    {
+      if(sum(grep("long", colnames(df)[iPattern])) == 0)
+      {
+        short <- df[df$wavelength > 320 & df$wavelength < 390, colnames(df)[iPattern]]
+        long <- df[df$wavelength > 320 & df$wavelength < 390, longCols[iCOL]]
+        PercentDiff <- mean(((long - short) / short), na.rm = TRUE)
+        correctedLong <- df[,longCols[iCOL]] - (PercentDiff * df[,longCols[iCOL]])
+        
+        firstNA <- which(is.na(correctedLong))[1]
+        newLong <- c(correctedLong[1:(firstNA-1)], df[firstNA:nrow(df), colnames(df)[iPattern]])
+        df[,longCols[iCOL]] <- newLong
+        
+        if(verbose == TRUE)
+        {
+          rmse <- sqrt((sum(df[1:319,longCols[iCOL]-1] - newLong[1:319])^2) / 319)
+          cat(namePattern[iCOL], "| final RMSE in UVs =", round(rmse, 5), "W m-2 nm-1", "\n")
+        }
+        
+        if(BSWF == TRUE)
+        {
+          options(warn = -1)
+          ss <- source_spct(w.length = df[,1], s.e.irrad = df[,longCols[iCOL]])
+          BSWFs <- cbind(BSWFs, BSWF.irrad.calc(ss))
+          colnames(BSWFs)[ncol(BSWFs)] <- paste0(colnames(df)[longCols[iCOL]])
+          options(warn = 0)
+        }
+      }
+    }
+  }
+  if(BSWF == TRUE)
+  {
+    # Remove useless columns
+    BSWFs <- BSWFs[,-c(1,tail(which(colnames(BSWFs) == "spectra"),-1))]
+    return(list(df, BSWFs))
+  } else {
+    return(df)
+  }
+}
+```
+
+#### Example
+```{r, echo = FALSE}
+df <- read.table("C:/Users/Localadmin_durandma/Dropbox/Work/Lammi 2020/Maya/deepest/2020.05.29.FI.Lammi.Quercus.alldeepest.irrad.txt", header = T)
+
+long <- df[,3]
+short <- df[,2]
+diff <- 100*(long - short) / short
+
+longCols <- grep("long", colnames(df))
+namePattern <- gsub("long", "", colnames(df)[longCols]) 
+iCOL = 1
+iPattern = 2
+short <- df[df$wavelength > 320 & df$wavelength < 390, colnames(df)[iPattern]]
+long <- df[df$wavelength > 320 & df$wavelength < 390, longCols[iCOL]]
+PercentDiff <- mean(((long - short) / short), na.rm = TRUE)
+correctedLong <- df[,longCols[iCOL]] - (PercentDiff * df[,longCols[iCOL]])
+```
+
+```{r}
+data <- procLong(df = df)[[1]]
+```
+
+**Here the vertical lines show the waveband over which the percent difference is calculated.**
+```{r echo = FALSE}
+par(mar = c(4,4,1,1), bty = "L")
+plot(-500, xaxt = "n", yaxt = "n", xlab = "", ylab = "", xlim = c(270,420), ylim = c(-60,30))
+points(diff~df[,1], type = "l", lwd = 1, col = "gray40")
+abline(v = 320)
+abline(v = 390)
+axis(side = 1, font = 2)
+axis(side = 2, font = 2, las = 2)
+mtext(side = 1, text = "Wavelength (cm)", line = 2, cex = 1.2)
+mtext(side = 2, text = "Percent difference (%)", line = 2.5, cex = 1.2)
+title(main = "Percent difference between long and short scans", cex.main = 0.9)
+```
+
+***
+
+```{r, echo = FALSE}
+par(mar = c(4,4,1,1), bty = "L")
+plot(-500, xaxt = "n", yaxt = "n", xlab = "", ylab = "", xlim = c(270,420), ylim = c(0,0.09))
+points(df[,2]~df[,1], type = "l", lwd = 3)
+points(correctedLong~df[,1], col = "red", type = "l")
+points(df[,3]~df[,1], col = "blue", type = "l")
+axis(side = 1, font = 2)
+axis(side = 2, font = 2, las = 2)
+mtext(side = 1, text = "Wavelength (nm)", line = 2, cex = 1.2)
+mtext(side = 2, text = expression(paste("Spectral Energy irradiance E(", lambda, ") (W m"^-2, " nm"^-1, ")", sep = "")), line = 2.5, cex = 1.2)
+legend("topleft", bty = "n", legend = c("short scan", "long scan", "corrected long scan"), col = c("black", "blue", "red"), lwd = 3)
+```
+
+***
+
+```{r, echo = FALSE}
+
+par(mar = c(4,4,1,1), bty = "L")
+plot(-500, xaxt = "n", yaxt = "n", xlab = "", ylab = "", xlim = c(320,400), ylim = c(0.04,0.09))
+points(df[,2]~df[,1], type = "l", lwd = 1)
+points(correctedLong~df[,1], col = "red", type = "l")
+points(df[,3]~df[,1], col = "blue", type = "l")
+axis(side = 1, font = 2)
+axis(side = 2, font = 2, las = 2)
+mtext(side = 1, text = "Wavelength (cm)", line = 2, cex = 1.2)
+mtext(side = 2, text = expression(paste("Spectral Energy irradiance E(", lambda, ") (W m"^-2, " nm"^-1, ")", sep = "")), line = 2.5, cex = 1.2)
+legend("topleft", bty = "n", legend = c("short scan", "long scan", "corrected long scan"), col = c("black", "blue", "red"), lwd = 3)
+```
+
+
+### GetIntTime {.tabset}
+**GetIntTime** returns a dataframe with all the spectra in the **subFolder** and their integration time (in microseconds). 
+
+#### Function
+```{r}
+GetIntTime <- function(subFolder, Folder, User = myUsername, Year = 2020)
+{
+  inFolder <- paste0("C:/Users/", User, "/Dropbox/SpecS/Maya", Year, "/Scans", Year, "/")
+  darkFiles <- list.files(path = paste0(inFolder, "/", Folder, "/", subFolder, "/"), pattern = paste0("dark.txt"))
+  
+  df <- data.frame()
+  for (iDark in darkFiles)
+  {
+    namePattern <- substring(iDark, 1, nchar(iDark)-8)
+    pathToFiles <- paste0(inFolder, Folder, "/", subFolder, "/")
+    firstFile <- list.files(pathToFiles)[grep(namePattern, list.files(pathToFiles))[1]]
+    data <- ooacquire::read_oo_data(file = paste0(pathToFiles, firstFile))
+    
+    row <- c(Folder, subFolder, substring(iDark,1,nchar(iDark)-8), attributes(data)$instr.settings$integ.time)
+    df <- rbind(df, row)
+  }
+  colnames(df) <- c("Folder", "subFolder", "spectrum", "integrationTime_us")
+  return(df)
+}
+```
+
+#### Example
+```{r}
+GetIntTime(subFolder = "BetulaYoung", Folder = "2020.05.25.FI.Lammi", User = myUsername)
+```
+
+### getMayaTime {.tabset}
+**getMayaTime** returns a data frame with all the spectra in the **subFolder** and the times the *dark scans* were taken.   
+  
+**Time is in UTC.**
+  
+#### Function
+```{r}
+### Get time for spectra measurment
+getMayaTime <- function(subFolder, Folder, User = myUsername, Year = 2020)
+{
+  inFolder <- paste0("C:/Users/", User, "/Dropbox/SpecS/Maya", Year, "/Scans", Year, "/")
+  darkFiles <- list.files(path = paste0(inFolder, "/", Folder, "/", subFolder, "/"), pattern = paste0("dark.txt"))
+  
+  df <- data.frame()
+  for (iDark in darkFiles)
+  {
+    namePattern <- substring(iDark, 1, nchar(iDark)-8)
+    pathToFiles <- paste0(inFolder, Folder, "/", subFolder, "/")
+    firstFile <- list.files(pathToFiles)[grep(namePattern, list.files(pathToFiles))[1]]
+    data <- ooacquire::read_oo_data(file = paste0(pathToFiles, firstFile))
+
+    row <- c(substring(subFolder,1,1), substring(iDark,1,nchar(iDark)-8), strsplit(as.character(attributes(data)$when.measured), " ", fixed = T)[[1]])
+    df <- rbind(df, row)
+  }
+  colnames(df) <- c("stand", "spectrum", "date", "time")
+  return(df)
+}
+```
+
+#### Example
+```{r}
+getMayaTime(subFolder = "BetulaYoung", Folder = "2020.05.25.FI.Lammi", User = myUsername)
+```
+
+
+### MayaToTimeSeries {.tabset}
+**MayaToTimeSeries** takes either an *xxx_irrad.txt* or *xxx_BSWF.txt* data frame (the outputs of MayaProcessing) and tranform the data from wide to long. It also add time ofr each scans based on integration time. Thus, it requires **GetIntTime** to be in R's environment to run properly. 
+
+#### Function
+```{r}
+MayaToTimeSeries <- function(df, Folder, subFolder, User = myUsername, Year = 2020)
+{
+  # Get spectrum number
+  spcNames <- colnames(df)[2:ncol(df)]
+  
+  # If first character is number, R adds an X to col name (so we remove it here)
+  for(iName in 1:length(spcNames))
+  {
+    if(substring(spcNames[iName], 1, 1) == "X")
+    {
+      spcNames[iName] <- substring(spcNames[iName], 2, nchar(spcNames[iName]))
+    }
+  }
+  
+  splitName <- strsplit(spcNames[1], "")[[1]]
+  lastLetter <- suppressWarnings(max(grep(TRUE, is.na(as.numeric(splitName)))))
+  spcNum <- substring(spcNames, lastLetter + 1, nchar(spcNames))
+  #spcNum <- gsub("[^[:digit:]]", "", spcNames)
+  while(as.numeric(substring(spcNum[1], 1, 1)) != 0)
+  {
+    spcNum <- substring(spcNum, 2, nchar(spcNum))
+  }
+  spcNum <- as.numeric(spcNum)
+  
+  # Get integration time
+  namePattern <- strsplit(spcNames[1], "00")[[1]][1]
+  dfT <- GetIntTime(Folder = Folder, subFolder = subFolder, User = User, Year = Year)
+  iTime <- dfT[dfT$spectrum == namePattern,"integrationTime_us"]
+  iTime <- as.numeric(iTime) / 1e6
+  
+  # Calculate time of spectrum based on integration time and spectrum number
+  Times <- iTime * spcNum
+  
+  # Build new data frane in long form
+  newWavelengthCol <- rep(unlist(df[,1]), times = ncol(df) - 1)
+  newIrradCol <- unlist(df)[(nrow(df)+1):(ncol(df)*nrow(df))]
+  newNamesCol <- rep(spcNames, each = nrow(df))
+  newSpcNumCol <-  rep(spcNum, each = nrow(df))
+  newTimeCol <- rep(Times, each = nrow(df))
+  
+  newdf <- data.frame(newWavelengthCol, newTimeCol, newIrradCol, newSpcNumCol, newNamesCol)
+  rownames(newdf) <- NULL
+  if(is.numeric(newWavelengthCol))
+  {
+    colnames(newdf) <- c("Wavelength", "Time", "Irrad", "SpcNum", "Spectrum")
+  } else {
+    colnames(newdf) <- c("BSWF", "Time", "Irrad", "SpcNum", "Spectrum")
+    require(tidyr)
+    newdf <- spread(newdf, BSWF, Irrad)
+    for(j in 4:44)
+    {
+      newdf[,j] <- as.numeric(newdf[,j])
+    }
+    
+  }
+  return(newdf)
+}
+```
+
+#### Example
+```{r, echo = FALSE}
+dfI <- read.table("C:/Users/Localadmin_durandma/Dropbox/SpecS/Maya2020/ScansOut2020/2020.06.29.FI.Viikki/BarleyField/test200000_irrad.txt", header = T)
+dfB <- read.table("C:/Users/Localadmin_durandma/Dropbox/SpecS/Maya2020/ScansOut2020/2020.06.29.FI.Viikki/BarleyField/test200000_BSWF.txt", header = T)
+```
+
+```{r}
+# Printing only first 7 columns and first 20 lines for readability
+head(dfI[,1:7], 20)
+```
+
+```{r}
+# Printing only first 6 columns and first 20 lines for readability
+head(dfB[,1:6], 20)
+```
+
+```{r}
+dfI_long <- MayaToTimeSeries(dfI, Folder = "2020.06.29.FI.Viikki", subFolder = "BarleyField")
+dfB_long <- MayaToTimeSeries(dfB, Folder = "2020.06.29.FI.Viikki", subFolder = "BarleyField")
+```
+
+```{r}
+# Printing a specific subset to better show how the table is ordered
+tail(head(dfI_long, 57536),20)
+```
+
+```{r}
+# Printing a specific subset to better show how the table is ordered
+tail(head(dfB_long, 1200), 20)
+```
+
+### Rename a batch of files {.tabset}
+Use for renaming a multiscan measurment at once. The function ignore the dark and filter scan (you have to do it manually if you need it).  
+
+The **path** to the files has to be provided, as well as the **oldPattern**, that is the one to change, excluding the scan numbering (00000, 000054, 00099, etc.). The **newPattern** will replace the **oldPattern**.
+
+**Notice:**
+*There is no fail-safe, so it is better to do it after having copied the files elsewhere in case something goes wrong.*  
+
+#### Function
+```{r, eval = FALSE}
+renameBatch <- function(path, oldPattern, newPattern, digit = 5)
+{
+  if (substring(path, nchar(path), nchar(path)) != "/"){
+    path = paste0(path, "/")
+  }
+  
+  filenames = list.files(path = path, pattern = oldPattern) 
+  filenames <- filenames[-grep("dark", filenames)]
+  filenames <- filenames[-grep("PC", filenames)]
+  
+  nb <- length(filenames)
+  if(nb > 10000){stop("function does not support number of files higher than 10000")}
+  
+  
+  if(nb < 11){
+    newFilenames = paste0(newPattern, "0000", 0:(nb-1), ".txt")
+  } else {
+    newFilenames = paste0(newPattern, "0000", 0:9, ".txt")
+  }
+  if(nb > 10 & nb < 101){
+    newFilenames = append(newFilenames, values = paste0(newPattern, "000", 10:(nb-1), ".txt"))
+  } else if (nb > 10) {
+    newFilenames = append(newFilenames, values = paste0(newPattern, "000", 10:99), ".txt")
+  }
+  if(nb > 100 & nb < 1001){
+    newFilenames = append(newFilenames, values = paste0(newPattern, "00", 100:(nb-1), ".txt"))
+  } else if (nb > 100) {
+    newFilenames = append(newFilenames, values = paste0(newPattern, "00", 100:999, ".txt"))
+  }
+  if(nb > 1000 & nb < 10001){
+    newFilenames = append(newFilenames, values = paste0(newPattern, "0", 1000:(nb-1), ".txt"))
+  } else if (nb > 1000)  {
+    newFilenames = append(newFilenames, values = paste0(newPattern, "00", 1000:9999, ".txt"))
+  }
+
+  file.rename(paste0(path, filenames), paste0(path, newFilenames))
+}
+```
+
+### boxWB {.tabset}
+
+Add boxes to find limits of wavebands on a spectra. if the argument **lines = TRUE**, also plot vertical lines at the border of each wavebands.
+
+Limits are:
+
+Waveband  | lower limit   | upper limit
+--------- | ------------- | ----------
+UVc       | 100           | 280
+UVb       | 280           | 315
+UVa       | 315           | 400
+Violet    | 400           | 455
+Blue      | 455           | 492
+Green     | 492           | 577
+Yellow    | 577           | 592
+Orange    | 592           | 622 
+Red       | 622           | 700
+Far Red   | 700           | 770 
+NIR       | 770           | 3000
+MIR       | 3000          | 50000
+FIR       | 50000         | 1e6
+
+#### Function
+```{r}
+boxWB <- function(prop = 0.05, lines = F)
+{
+  xLim <- par("usr")[1:2]
+  yLim <- par("usr")[3:4]
+  space <- c(diff(xLim)*0.01, diff(yLim)*prop)
+  
+  WB <- vector()
+  UVc <- new_waveband(100,280) ; if(!all(UVc$low > xLim[2] | UVc$high < xLim[1])){WB <- append(WB, "UVc")}
+  UVb <- new_waveband(280,315) ; if(!all(UVb$low > xLim[2] | UVb$high < xLim[1])){WB <- append(WB, "UVb")}
+  UVa <- new_waveband(315,400) ; if(!all(UVa$low > xLim[2] | UVa$high < xLim[1])){WB <- append(WB, "UVa")}
+  Vo <- new_waveband(400,455) ; if(!all(Vo$low > xLim[2] | Vo$high < xLim[1])){WB <- append(WB, "Vo")}
+  Bl <- new_waveband(455,492) ; if(!all(Bl$low > xLim[2] | Bl$high < xLim[1])){WB <- append(WB, "Bl")}
+  Gr <- new_waveband(492,577) ; if(!all(Gr$low > xLim[2] | Gr$high < xLim[1])){WB <- append(WB, "Gr")}
+  Yl <- new_waveband(577,597) ; if(!all(Yl$low > xLim[2] | Yl$high < xLim[1])){WB <- append(WB, "Yl")}
+  Or <- new_waveband(592,622) ; if(!all(Or$low > xLim[2] | Or$high < xLim[1])){WB <- append(WB, "Or")}
+  Rd <- new_waveband(622,700) ; if(!all(Rd$low > xLim[2] | Rd$high < xLim[1])){WB <- append(WB, "Rd")}
+  FR <- new_waveband(700,770) ; if(!all(FR$low > xLim[2] | FR$high < xLim[1])){WB <- append(WB, "FR")}
+  NIR <- new_waveband(770,3000) ; if(!all(NIR$low > xLim[2] | NIR$high < xLim[1])){WB <- append(WB, "NIR")}
+  MIR <- new_waveband(3000,50000) ; if(!all(MIR$low > xLim[2] | MIR$high < xLim[1])){WB <- append(WB, "MIR")}
+  FIR <- new_waveband(50000,1e6) ; if(!all(FIR$low > xLim[2] | FIR$high < xLim[1])){WB <- append(WB, "FIR")}
+  
+  # All
+  polygon(x = c(max(c(100,xLim[1]))+space[1], min(c(1000,xLim[2]))-space[1], min(c(1000,xLim[2]))-space[1], max(c(100,xLim[1])+space[1])), 
+          y = c(yLim[2], yLim[2], yLim[2]-space[2], yLim[2]-space[2]), 
+          border = "gray30", col = "black")
+  
+  # UV-C
+  if(any(WB == "UVc")){
+    polygon(x = c(max(c(100,xLim[1]))+space[1], 280, 280, max(c(100,xLim[1])+space[1])), 
+            y = c(yLim[2], yLim[2], yLim[2]-space[2], yLim[2]-space[2]), 
+            border = "gray40", col = "black")
+    if(lines){abline(v=100, col = "gray80");abline(v=280, col = "gray80")}
+  }
+  
+  # UV-B
+  if(any(WB == "UVb")){
+    polygon(x = c(max(c(280,xLim[1]))+ifelse(any(WB == "UVc"), 0, space[1]), 315, 315, max(c(280,xLim[1])+ifelse(any(WB == "UVc"), 0, space[1]))), 
+            y = c(yLim[2], yLim[2], yLim[2]-space[2], yLim[2]-space[2]), 
+            border = "gray40", col = "gray20")
+    if(lines){abline(v=280, col = "gray80");abline(v=315, col = "gray80")}
+  }
+  
+  # UV-A
+  if(any(WB == "UVa")){
+    polygon(x = c(max(c(315,xLim[1]))+ifelse(any(WB == "UVb"), 0, space[1]), 400, 400, max(c(315,xLim[1])+ifelse(any(WB == "UVb"), 0, space[1]))), 
+            y = c(yLim[2], yLim[2], yLim[2]-space[2], yLim[2]-space[2]), 
+            border = "gray40", col = "darkorchid4")
+    if(lines){abline(v=315, col = "gray80");abline(v=400, col = "gray80")}
+  }
+  
+  # Violet
+  if(any(WB == "Vo")){
+    polygon(x = c(max(c(400,xLim[1]))+ifelse(any(WB == "UVa"), 0, space[1]), 455, 455, max(c(400,xLim[1])+ifelse(any(WB == "UVa"), 0, space[1]))), 
+            y = c(yLim[2], yLim[2], yLim[2]-space[2], yLim[2]-space[2]), 
+            border = "gray40", col = "darkorchid")
+    if(lines){abline(v=400, col = "gray80");abline(v=455, col = "gray80")}
+  }
+  
+  # Blue
+  if(any(WB == "Bl")){
+    polygon(x = c(max(c(455,xLim[1]))+ifelse(any(WB == "Vo"), 0, space[1]), 492, 492, max(c(455,xLim[1])+ifelse(any(WB == "Vo"), 0, space[1]))), 
+            y = c(yLim[2], yLim[2], yLim[2]-space[2], yLim[2]-space[2]), 
+            border = "gray40", col = "royalblue4")
+    if(lines){abline(v=455, col = "gray80");abline(v=492, col = "gray80")}
+  }
+  
+  # Green
+  if(any(WB == "Gr")){
+    polygon(x = c(max(c(492,xLim[1]))+ifelse(any(WB == "Bl"), 0, space[1]), 577, 577, max(c(492,xLim[1])+ifelse(any(WB == "Bl"), 0, space[1]))), 
+            y = c(yLim[2], yLim[2], yLim[2]-space[2], yLim[2]-space[2]), 
+            border = "gray40", col = "green4")
+    if(lines){abline(v=492, col = "gray80");abline(v=577, col = "gray80")}
+  }
+  
+  # Yellow
+  if(any(WB == "Yl")){
+    polygon(x = c(max(c(577,xLim[1]))+ifelse(any(WB == "Gr"), 0, space[1]), 597, 597, max(c(577,xLim[1])+ifelse(any(WB == "Gr"), 0, space[1]))), 
+            y = c(yLim[2], yLim[2], yLim[2]-space[2], yLim[2]-space[2]), 
+            border = "gray40", col = "goldenrod1")
+    if(lines){abline(v=577, col = "gray80");abline(v=597, col = "gray80")}
+  }
+  
+  # Orange
+  if(any(WB == "Or")){
+    polygon(x = c(max(c(597,xLim[1]))+ifelse(any(WB == "Yl"), 0, space[1]), 622, 622, max(c(597,xLim[1])+ifelse(any(WB == "Yl"), 0, space[1]))), 
+            y = c(yLim[2], yLim[2], yLim[2]-space[2], yLim[2]-space[2]), 
+            border = "gray40", col = "chocolate1")
+    if(lines){abline(v=597, col = "gray80");abline(v=622, col = "gray80")}
+  }
+  
+  # Red
+  if(any(WB == "Rd")){
+    polygon(x = c(max(c(622,xLim[1]))+ifelse(any(WB == "Or"), 0, space[1]), 700, 700, max(c(622,xLim[1])+ifelse(any(WB == "Or"), 0, space[1]))), 
+            y = c(yLim[2], yLim[2], yLim[2]-space[2], yLim[2]-space[2]), 
+            border = "gray40", col = "firebrick1")
+    if(lines){abline(v=622, col = "gray80");abline(v=700, col = "gray80")}
+  }
+  
+  # Far Red
+  if(any(WB == "FR")){
+    polygon(x = c(max(c(700,xLim[1]))+ifelse(any(WB == "Rd"), 0, space[1]), 770, 770, max(c(700,xLim[1])+ifelse(any(WB == "Rd"), 0, space[1]))), 
+            y = c(yLim[2], yLim[2], yLim[2]-space[2], yLim[2]-space[2]), 
+            border = "gray40", col = "darkred")
+    if(lines){abline(v=700, col = "gray80");abline(v=770, col = "gray80")}
+  }
+  
+  # NIR
+  if(any(WB == "NIR")){
+    polygon(x = c(max(c(770,xLim[1]))+ifelse(any(WB == "FR"), 0, space[1]), ifelse(any(WB == "MIR"),3000,3000-space[1]), ifelse(any(WB == "MIR"),3000,3000-space[1]), max(c(770,xLim[1])+ifelse(any(WB == "FR"), 0, space[1]))), 
+            y = c(yLim[2], yLim[2], yLim[2]-space[2], yLim[2]-space[2]), 
+            border = "gray40", col = "tomato4")
+    if(lines){abline(v=770, col = "gray80");abline(v=3000, col = "gray80")}
+  }
+  
+  # MIR
+  if(any(WB == "MIR")){
+    polygon(x = c(max(c(3000,xLim[1]))+ifelse(any(WB == "NIR"), 0, space[1]), 50000, 50000, max(c(3000,xLim[1])+ifelse(any(WB == "NIR"), 0, space[1]))), 
+            y = c(yLim[2], yLim[2], yLim[2]-space[2], yLim[2]-space[2]), 
+            border = "gray40", col = "black")
+    if(lines){abline(v=3000, col = "gray80");abline(v=50000, col = "gray80")}
+  }
+  
+  # FIR
+  if(any(WB == "FIR")){
+    polygon(x = c(max(c(50000,xLim[1]))+ifelse(any(WB == "MIR"), 0, space[1]), 1e6-space[1], 1e6-space[1], max(c(50000,xLim[1])+ifelse(any(WB == "MIR"), 0, space[1]))), 
+            y = c(yLim[2], yLim[2], yLim[2]-space[2], yLim[2]-space[2]), 
+            border = "gray40", col = "black")
+    if(lines){abline(v=50000, col = "gray80");abline(v=1e6, col = "gray80")}
+  }
+}
+```
+
+#### Example
+```{r}
+plotPCdark(subFolder = "Quercus", Folder = "2020.05.21.FI.Lammi")
+boxWB()
+```
+
+***
+
+**With the lines:**
+```{r}
+plotPCdark(subFolder = "Quercus", Folder = "2020.05.21.FI.Lammi")
+boxWB(lines = TRUE)
+```

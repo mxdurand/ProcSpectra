@@ -1,0 +1,969 @@
+---
+title: "How to analyze irradiance data"
+author: "Maxime Durand"
+date: "14/02/2020"
+output:
+   prettydoc::html_pretty:
+    theme: cayman
+    highlight: github
+    math: katex
+    fig_height: 8
+    fig_width: 11
+    toc: yes
+    toc_depth: 6
+---
+
+```{R, echo = FALSE, warning = FALSE, message = FALSE}
+knitr::opts_knit$set(root.dir = "C:/Users/Localadmin_durandma/Dropbox/SpecS/RcodeNewExample/")
+```
+
+# How to analyze irradiance data
+    
+    
+First of all, here is all the packages needed:
+
+```{R, warnings = FALSE, message = FALSE}
+# First install a version of Java if not already done (otherwise cant load rJava package)
+# You might need both 32 and 64 bits versions (https://www.java.com/en/download/manual.jsp)
+if(!("rJava" %in% installed.packages()[,"Package"])){
+  cat("Installing the package 'rJava'", "\n")
+  install.packages("rJava")
+}
+library(rJava)
+
+# You will need Rtools: https://cran.r-project.org/bin/windows/Rtools/
+# Once it is done, for R version 4.0, run this line and restart R
+# writeLines('PATH="${RTOOLS40_HOME}\\usr\\bin;${PATH}"', con = "~/.Renviron")
+# Sys.which("make") # Should show : ## "C:\\rtools40\\usr\\bin\\make.exe"
+
+
+# Then install Omnidriver using Rtools
+if(!("devtools" %in% installed.packages()[,"Package"])){
+  cat("Installing the package 'devtools'", "\n")
+  install.packages("devtools")
+}
+if(!("rOmniDriver" %in% installed.packages()[,"Package"])){
+  cat("Installing the package 'rOmniDriver'", "\n")
+  devtools::install_github("aphalo/romnidriver")
+}
+
+# Finally get the ooacquire package
+if(!("ooacquire" %in% installed.packages()[,"Package"])){
+  cat("Installing the package 'ooacquire'", "\n")
+  devtools::install_github("aphalo/ooacquire")
+}
+
+source("C:/Users/Localadmin_durandma/Dropbox/Work/R/Misc/Rutils.R")
+source("C:/Users/Localadmin_durandma/Dropbox/Work/R/Spectral_Irr/SpecUtils.R")
+
+# Then load rest of the packages downloadable from CRAN
+#library(readxl)
+library(xlsx)
+library(photobiology)
+library(photobiologyWavebands)
+library(photobiologyPlants)
+library(ooacquire)##http://docs.r4photobiology.info/oocquire/vignettes/user-guide.html
+###take function s_irrad_corrected and the calibration files from the package
+library(ggplot2)
+library(ggspectra)
+library(ggrepel)
+library(ggpmisc)
+library(signal)
+library(RColorBrewer)
+library(fda.usc)
+```
+    
+    
+    
+With every measurments (100 scans), 2 more spectra are taken. The first one, the **dark scan**, to correct for dark noise taken using a dark cap over the diffuser blocking UV and visible solar radiation. The second one, the **stray-light correction for the UV**, is taken using a polycarbonate cap over the diffuser blocking solar UV radiation (UV-B 280–315 nm plus UV-A 315–400 nm).
+
+All three scans are imported in R:
+
+```{R}
+# Define the name of the files tobe imported, and their identity (dark is dark scan, FC is UV correction)
+irrad <- list(light = "12asnow.txt", filter = "12asnowPC.txt", dark = "12asnowdark.txt")
+```
+
+Here is what they look like:
+
+```{R, echo = FALSE}
+dfL <- read.table("12asnow.txt", header = F, sep = "\t", dec = ".", skip = 17, nrows = 2068, col.names = c("w.length", "s.e.irrad"))
+dfF <- read.table("12asnowPC.txt", header = F, sep = "\t", dec = ".", skip = 17, nrows = 2068, col.names = c("w.length", "s.e.irrad"))
+dfD <- read.table("12asnowdark.txt", header = F, sep = "\t", dec = ".", skip = 17, nrows = 2068, col.names = c("w.length", "s.e.irrad"))
+
+plot(-5000, bty = "L", xlab="Wavelength", ylab="Count", xlim = c(185, 1120), ylim = c(0,50000))
+points(s.e.irrad~w.length, data = dfD, type = "l", col = "azure4", lwd = 1)
+points(s.e.irrad~w.length, data = dfL, type = "l", col = "black", lwd = 2)
+points(s.e.irrad~w.length, data = dfF, type = "l", col = "burlywood4", lwd = 1)
+legend("topleft", bty = "n", legend = c("12asnow", "12asnowPC", "12asnowdark"), col = c("black", "burlywood4", "azure4"), lwd = 3)
+```
+
+The specta are then imported in a special class. A correction method and a descriptor are chosen based on the measuring device and the date, respectively.
+
+```{R, message = FALSE}
+raw.mspct <- ooacquire::read_files2mspct(files = irrad, descriptor = which_descriptor("2017-10-06"))
+raw.mspct
+
+correction.method = MAYP11278_sun.mthd
+```
+
+After that, a number of corrections are done on each spectra:
+
+## 1.  Removing bad pixels
+
+Bad pixels are stored in the decriptor object ("bad.pixs"). The function works for multiple columns with the name "*counts". The bad pixels are replaced by the average of the pixel before and after.
+
+```{R}
+temp.spct <- raw.mspct[["light"]] #Select one spectrum
+
+skip_bad_pixs <- function(x) {
+  stopifnot(is.raw_spct(x))
+  bad.pixs <- getInstrDesc(x)[["bad.pixs"]]
+  if (length(bad.pixs) == 0) {
+    # nothing to do
+    return(x)
+  }
+  counts.cols <- grep("^counts", names(x), value = TRUE)
+  for (col in counts.cols) {
+    x[bad.pixs, col] <-
+      (x[bad.pixs - 1, col] + x[bad.pixs + 1, col]) / 2
+  }
+  x
+}
+
+temp.spct <- skip_bad_pixs(temp.spct)
+```
+
+```{R, echo = FALSE}
+temp.spct_old <- raw.mspct[["light"]] #Select one spectrum
+temp.spct_new <- skip_bad_pixs(temp.spct_old)
+
+plot(counts~w.length, data = temp.spct_old, bty = "L", type = "l", xlim = c(185,1120), ylim=c(0, 37000), col = "black")
+points(counts~w.length, data = temp.spct_new, xlab="", ylab="", xaxt="n", yaxt="n", type = "l", xlim = c(185,1120), col = "red")
+legend("topleft", bty = "n", legend=c("old", "new"), col = c("black", "red"), lwd = 3)
+```
+
+## 2.  Replace out-of-range instrument counts
+
+This function will replave by NA "out-of-range" counts values. The maximum number of counts is found in the descriptor object ("max.counts"). You can specify the range (by default -Inf to max.counts) and what fill in (by default NA). Also works for multiple counts columns.
+
+```{R}
+trim_counts <- function(x,
+                        range = c(NA, getInstrDesc(x)[["max.counts"]] - 1),
+                        fill = NA) {
+  stopifnot(is.raw_spct(x))
+  if (is.na(range[1])) {
+    range[1] <- -Inf
+  }
+  if (is.na(range[2])) {
+    range[2] <- Inf
+  }
+  counts.cols <- grep("^counts", names(x), value = TRUE)
+  for (col in counts.cols) {
+    if (min(x[[col]]) < 0) {
+      warning("Negative raw counts in data!\n",
+              "These are not raw detector counts.")
+    }
+    x[[col]] <- ifelse(x[[col]] < range[1] | x[[col]] > range[2],
+                       fill,
+                       x[[col]])
+  }
+  x
+}
+
+temp.spct <- trim_counts(temp.spct)
+```
+
+## 3.  Expand NA's to neighbouring pixels
+
+Replace neighbouring pixels of NA's with NA. This is because of a phenomenon similar to "blooming" in camera sensors whereby when a sensor well gets saturated some of the charge migrates to adjacent wells in the detector increasing their readings.
+
+```{R}
+bleed_nas <- function(x, n = 10) {
+  stopifnot(is.raw_spct(x))
+  counts.cols <- grep("^counts", names(x), value = TRUE)
+  # this is a "quick and dirty" algorithm that assumes that we do not need to
+  # check for NAs the first n and last n pixels of the detector array, which in
+  # practice are almost never used for anything but dark reference and so very
+  # unlikely to be exposed to an irradiance saturating their response.
+  z <- x
+  for (i in counts.cols) {
+    for (j in n:(nrow(x) - n)) {
+      if (anyNA(x[(j-n):(j+n), i])) {
+        z[j, i] <- NA
+      }
+    }
+  }
+  z
+}
+
+temp.spct <- bleed_nas(temp.spct)
+```
+
+## 4.  Apply linearization correction to raw counts data
+
+Linearization correction is in "inst.calib$nl.fun" of the descriptor object. A number of checks are done to see whether linearization is already done and if the linearization function in found.
+
+The calibration look like this
+
+```{R echo = FALSE}
+DES = which_descriptor("2017-10-06")
+before_linearization <- 0:50000
+after_linearization <- DES$inst.calib$nl.fun(before_linearization)
+
+plot(after_linearization~before_linearization, type = "l", col = "red")
+abline(0,1)
+legend("topleft", bty = "n", legend=paste("y =", coef(lm(after_linearization~before_linearization-1)), "*x"))
+```
+
+```{R}
+linearize_counts <- function(x,
+                             force.zero = TRUE,
+                             verbose = getOption("photobiology.verbose", default = FALSE)) {
+  # guard against attempts to reapply linearization
+  settings <- getInstrSettings(x)
+  if (length(settings[["linearized"]]) == 0L) {
+    warning("Linearized attr is NULL, assuming FALSE")
+  } else if (is.na(settings[["linearized"]])) {
+    stop("Linearization status unknown")
+  } else if (settings[["linearized"]]) {
+    if (verbose) {
+          message("Spectrum already linearized, returning as is.")
+    }
+    return(x)
+  }
+  descriptor <- getInstrDesc(x)
+  if (length(descriptor$inst.calib) == 0L ||
+      !is.list(descriptor$inst.calib) ||
+#      is.na(descriptor$inst.calib[[1L]]) ||
+      !is.function(descriptor$inst.calib$nl.fun)) {
+    stop("Non-linearity correction function is not available")
+  }
+  nl.fun <- descriptor$inst.calib$nl.fun
+  counts.cols <- names(x)[grep("^counts", names(x))]
+  for (col in counts.cols) {
+    if (force.zero) {
+      x[[col]] <- ifelse(x[[col]] >= 0.0, x[[col]], 0.0)
+      x[[col]] <- nl.fun(x[[col]])
+    }
+  }
+  settings[["linearized"]] <- TRUE
+  setInstrSettings(x, settings)
+  x
+}
+
+temp.spct <- linearize_counts(temp.spct)
+```
+
+```{R, echo = FALSE}
+temp.spct_old <- raw.mspct[["light"]] #Select one spectrum
+temp.spct_old <- skip_bad_pixs(temp.spct_old)
+temp.spct_old <- trim_counts(temp.spct_old)
+temp.spct_old <- bleed_nas(temp.spct_old)
+temp.spct_new <- linearize_counts(temp.spct_old)
+
+plot(counts~w.length, data = temp.spct_old, bty = "L", type = "l", xlim = c(185,1120), ylim=c(0, 37000), col = "black")
+points(counts~w.length, data = temp.spct_new, xlab="", ylab="", xaxt="n", yaxt="n", type = "l", xlim = c(185,1120), col = "red")
+legend("topleft", bty = "n", legend=c("old", "new"), col = c("black", "red"), lwd = 3)
+```
+
+## 5.  Shift data to center it to zero based on a set of values
+
+Here the set of values is the first 4, there aretaken in the correction.method object (inst.dark.pixs). The average count of these 4 wavelength is taken as the zero (*i.e.* this average is substracted to every wavelength of the spectrum).
+
+
+```{R}
+inst.dark.pixs = 1:4
+inst.dark.wl <- range(temp.spct[["w.length"]][inst.dark.pixs])
+temp.spct_new <- fshift(temp.spct_old, range = inst.dark.wl)
+```
+
+```{R, echo = FALSE}
+temp.spct_old <- raw.mspct[["light"]] #Select one spectrum
+temp.spct_old <- skip_bad_pixs(temp.spct_old)
+temp.spct_old <- trim_counts(temp.spct_old)
+temp.spct_old <- bleed_nas(temp.spct_old)
+temp.spct_old <- linearize_counts(temp.spct_old)
+
+inst.dark.pixs = 1:4
+inst.dark.wl <- range(temp.spct[["w.length"]][inst.dark.pixs])
+temp.spct_new <- fshift(temp.spct_old, range = inst.dark.wl)
+
+plot(counts~w.length, data = temp.spct_old, bty = "L", type = "l", xlim = c(185,1120), ylim=c(0, 37000), col = "black")
+points(counts~w.length, data = temp.spct_new, xlab="", ylab="", xaxt="n", yaxt="n", type = "l", xlim = c(185,1120), col = "red")
+legend("topleft", bty = "n", legend=c("old", "new"), col = c("black", "red"), lwd = 3)
+```
+
+
+## 6.  Calculate counts per seconds (cps) based on raw number of counts and integration times
+
+Apart from bunch of other safeguard and possibilities it basically a division of CPS = Counts / intergration time. No real need to show function here.
+
+```{R}
+temp.spct <- raw2cps(temp.spct)
+```
+
+
+## 7. Merge spectra to remove NA's
+
+If multiple spectra are available, replace NA's with longer integration time with cps values from shorter integration times.
+
+```{R}
+merge_cps <- function(x) {
+  stopifnot(is.cps_spct(x))
+  counts.cols <- grep("^cps", names(x), value = TRUE)
+  if (length(counts.cols) == 1) {
+    return(x)
+  }
+  instr.desc <- getInstrDesc(x)
+  instr.settings <- getInstrSettings(x)
+  integ.times <- instr.settings[["integ.time"]]
+  num.exposures <- instr.settings[["num.exposures"]]
+  if (all(num.exposures < 0L)) {
+    cols <- counts.cols[order(integ.times, decreasing = TRUE)]
+  } else {
+    cols <- counts.cols[order(num.exposures, decreasing = TRUE)]
+  }
+  x[["cps"]] <- x[[cols[1]]]
+  for (i in 2:length(cols)) {
+    x[["cps"]] <- ifelse(is.na(x[["cps"]]),
+                          x[[cols[i]]],
+                          x[["cps"]] )
+  }
+  z <- x[ , c("w.length", "cps")]
+  z <- photobiology::copy_attributes(x, z)
+  z
+}
+
+temp.spct <- merge_cps(temp.spct)
+```
+    
+    
+    
+Actually, since every spectra is subjected to these seven steps, everything can be done at once using a loop:
+
+```{R}
+raw2merged_cps <- function(xx, spct.names, inst.dark.pixs = NA_real_) 
+{
+  spct.names <- intersect(spct.names, names(xx))
+  zz <- cps_mspct()
+  for (n in spct.names) 
+    {
+    temp.spct <- xx[[n]]
+    inst.dark.wl <-
+      range(temp.spct[["w.length"]][inst.dark.pixs])
+    temp.spct <- skip_bad_pixs(temp.spct)
+    temp.spct <- trim_counts(temp.spct)
+    temp.spct <- bleed_nas(temp.spct)
+    temp.spct <- linearize_counts(temp.spct)
+    if (all(!is.na(inst.dark.wl))) {
+      temp.spct <- fshift(temp.spct, range = inst.dark.wl)
+    }
+    temp.spct <- raw2cps(temp.spct)
+    zz[[n]] <- merge_cps(temp.spct)
+  }
+  zz
+}
+
+spct.names = c(light = "light", filter = "filter", dark = "dark")
+y <- raw2merged_cps(xx = raw.mspct, spct.names = spct.names, inst.dark.pixs = correction.method$inst.dark.pixs)
+```
+
+## 8. Dark spectrum normalization
+
+From this, the dark spectrum can be substracted to both the *actual* data, and the other spectra for *stray-light correction for the UV*. The dark specrtum is deleted after that.
+
+```{R}
+y <- ref_correction(y, ref_name = spct.names["dark"])
+```
+
+```{R echo = FALSE}
+y_old <- raw2merged_cps(xx = raw.mspct, spct.names = c(light = "light", filter = "filter", dark = "dark"), inst.dark.pixs = correction.method$inst.dark.pixs)
+y_new <- ref_correction(y_old, ref_name = spct.names["dark"])
+
+
+plot(cps~w.length, data = y_old$light, bty = "L", type = "l", xlim = c(185,1120), ylim=c(0, 10000), col = "black")
+points(cps~w.length, data = y_old$dark, xlab="", ylab="", xaxt="n", yaxt="n", type = "l", xlim = c(185,1120), col = "azure4")
+points(cps~w.length, data = y_new$light, xlab="", ylab="", xaxt="n", yaxt="n", type = "l", xlim = c(185,1120), col = "red")
+legend("topleft", bty = "n", legend=c("old", "new", "dark"), col = c("black", "red", "azure4"), lwd = 3)
+```
+    
+## 9. Stray light correction
+    
+Then can come the stray light correction, using the method specified in the correction.method object. You can also do the correction even if the filter spectrum was not taken (using the function no_filter_correction). The function uses waveband filtered by the filter (the range is in correction.method$flt.dark.wl), the function then compute a ratio of **filter/light** as some average over those wavebands. and use that ratio to correct the light spectum as: **corrected_light = light - filter / ratio**
+
+```{R}
+filter_correction <- function(x, flt, stray.light.method = "original", stray.light.wl = c(218.5, 228.5),
+                              flt.dark.wl = c(193, 209.5), flt.ref.wl = c(360, 379.5), flt.Tfr = 1, trim = 0.05,
+                              verbose = getOption("photobiology.verbose", default = FALSE)) {
+  
+  stopifnot(is.cps_spct(x) && is.cps_spct(flt))
+  stopifnot(all(wl_range(x) == wl_range(flt)) && nrow(x) == nrow(flt))
+
+  straylight.corrected <- attr(x, "straylight.corrected", exact = TRUE)
+  if (!is.null(straylight.corrected) && !is.na(straylight.corrected) && straylight.corrected) {
+    if (verbose) {
+      warning("Skipping straylight correction: already corrected.")
+    }
+    return(x)
+  }
+
+  # check number of cps columns and merge if needed
+  x   <- merge_cps(x)
+  flt <- merge_cps(flt)
+
+  # Find maximum cps
+  max_x_cps <- max(x[["cps"]], na.rm = TRUE)
+
+  # compute filter short wl "dark" cps
+  if (anyNA(flt.dark.wl)) {
+    mean_flt_cps_short <- 0
+    mean_x_cps_short <- 0
+  } else {
+    flt_clip_dark <- clip_wl(flt, range = flt.dark.wl)
+    x_clip_dark <- clip_wl(x, range = flt.dark.wl)
+
+    mean_flt_cps_short <- mean(flt_clip_dark[["cps"]],
+                               trim = trim, na.rm = TRUE)
+    mean_x_cps_short <- mean(x_clip_dark[["cps"]],
+                             trim = trim, na.rm = TRUE)
+  }
+
+  # compute filter "reference" wl cps
+  flt_clip_ref <- clip_wl(flt, range = flt.ref.wl)
+  x_clip_ref <- clip_wl(x, range = flt.ref.wl)
+
+  mean_flt_cps_ref <- mean(flt_clip_ref[["cps"]],
+                            trim = trim, na.rm = TRUE)
+  mean_x_cps_ref <- mean(x_clip_ref[["cps"]],
+                          trim = trim, na.rm = TRUE)
+
+  # We try to avoid spureous warnings by using the mean
+  if (verbose && mean_flt_cps_short < -1e4 * max_x_cps) {
+    warning("Negative mean cps in \"filter\" spectrum's internal dark reference: ",
+            mean_flt_cps_short)
+  }
+
+  if (verbose && mean_x_cps_short < -1e4 * max_x_cps) {
+    warning("Negative mean cps in \"measured\" spectrum's internal dark reference: ",
+            mean_x_cps_short)
+  }
+
+  # Lasse's first correction
+  if (stray.light.method == "original") {
+    if (verbose && anyNA(flt_clip_dark[["filter_ratio"]])) {
+      warning(paste(sum(is.na(flt_clip_dark[["filter_ratio"]])),
+                    " NAs in filter_ratio"))
+    }
+    flt_clip_dark[["filter_ratio"]] <-
+      flt_clip_dark[["cps"]] / x_clip_dark[["cps"]]
+    mean_flt_ratio_short <- mean(flt_clip_dark[["filter_ratio"]],
+                                 trim = trim, na.rm = TRUE)
+  } else if (stray.light.method == "full" ||
+             stray.light.method == "sun" ||
+             stray.light.method == "raw") {
+    # attempt to avoid overcorrection
+    if ((mean_x_cps_short - mean_flt_cps_short) < 0.0) {
+      mean_flt_ratio_short <- 1.0
+    } else {
+      mean_flt_ratio_short <- mean_flt_cps_short / mean_x_cps_short
+    }
+  } else if (stray.light.method == "simple") {
+    # trust filter spectral transmitatnce
+    mean_flt_ratio_short <- flt.Tfr
+  }else {
+    stop(paste("stray.light.method '", stray.light.method, "' not supported"))
+  }
+
+  # diagnosis and correction of bad estimates
+  if (is.na(mean_flt_ratio_short)) {
+    warning("NA in mean_flt_ratio_short, skipping correction")
+  } else {
+    if (mean_flt_ratio_short < 0.75) {
+      # This is a guess based on PC filter transmittance of 90% or more in IR.
+      if (verbose || abs(mean_x_cps_short / max_x_cps) > 1e-2) {
+        warning("mean_flt_ratio_short < 0.75, was ",
+                signif(mean_flt_ratio_short, 4),
+                "; light source emits in UVC",
+                "; or instrument dark reading unstable",
+                ", using 0.85")
+      }
+      mean_flt_ratio_short <- 0.85 # we use the actual filter transmittance
+    } else if (mean_flt_ratio_short > 1.5) {
+      # This is set to 1.5 as it makes no sense to have a lot more noise with the filter than without it!
+      if (verbose || abs(mean_x_cps_short / max_x_cps) > 1e-2)
+        warning("mean_flt_ratio_short > 1.5, was ",
+                signif(mean_flt_ratio_short, 4),
+                ", set to 1.5; possible stray light unstable")
+      mean_flt_ratio_short <- 1.5
+    } else {
+      if (verbose) message("mean_flt_ratio_short is ", signif(mean_flt_ratio_short, 4))
+    }
+    selector <- x[["w.length"]] > flt.dark.wl[2] & x[["w.length"]] < flt.ref.wl[2]
+    # Apply correction
+    x[selector, "cps"] <-
+      x[selector, "cps"] - flt[selector, "cps"] / mean_flt_ratio_short
+  }
+
+  # correct "long" side of spectrum for stray light
+  flt_clip_ref <- clip_wl(flt, range = flt.ref.wl)
+  x_clip_ref <- clip_wl(x, range = flt.ref.wl)
+
+  mean_flt_cps_medium <- mean(flt_clip_ref[["cps"]],
+                            trim = trim, na.rm = TRUE)
+  mean_x_cps_medium <- mean(x_clip_ref[["cps"]],
+                          trim = trim, na.rm = TRUE)
+
+  # Because of pixel to pixel random noise this could easily be true per pixel
+  if (verbose && mean_flt_cps_medium < 0.0) {
+    warning("Mean cps of ", mean_flt_cps_medium,
+            " in reference region of \"filter\" scan!")
+  }
+
+  if (verbose && mean_x_cps_medium < 0.0) {
+    warning("Mean cps of ", mean_x_cps_medium,
+            " in reference region of \"measurement\" scan!")
+  }
+
+  if (verbose && ((mean_flt_cps_medium / mean_flt_cps_short) > 1.0)) {
+    message("There is more noise at ", flt.ref.wl[1], " to ", flt.ref.wl[2],
+            " nm than at ", flt.dark.wl[1],
+            " to ", flt.dark.wl[2], " nm, ratio: ",
+            signif(mean_flt_cps_medium / mean_flt_cps_short, 4))
+  }
+
+  selector <- x[["w.length"]] >= flt.ref.wl[2]
+  stray_light_correction <- mean_flt_cps_medium / mean_flt_ratio_short
+  # Apply correction
+  if (stray_light_correction > 0) {
+    x[selector, "cps"] <-
+      x[selector, "cps"] - stray_light_correction
+  } else {
+    warning("No stray light correction applied to long end of spectrum.")
+  }
+
+  attr(x, "straylight.corrected") <- TRUE
+
+  x
+}
+
+# Apart from the spectrum, the other parameters here are taken from correction.method
+z <- filter_correction(x = y[[spct.names["light"]]], flt = y[[spct.names["filter"]]], 
+                       stray.light.method = correction.method[["stray.light.method"]],
+                       stray.light.wl = correction.method[["stray.light.wl"]],
+                       flt.dark.wl = correction.method[["flt.dark.wl"]],
+                       flt.ref.wl = correction.method[["flt.ref.wl"]],
+                       flt.Tfr = correction.method[["flt.Tfr"]],
+                       trim = correction.method[["trim"]])
+```
+
+```{R echo = FALSE}
+plot(cps~w.length, data = y_new$light, bty = "L", type = "l", xlim = c(185,1120), ylim=c(0, 10000), col = "black")
+points(cps~w.length, data = z, xlab="", ylab="", xaxt="n", yaxt="n", type = "l", xlim = c(185,1120), col = "red")
+legend("topleft", bty = "n", legend=c("old", "new"), col = c("black", "red"), lwd = 3)
+```
+
+## 10. Slit function tail correction
+
+At the end the slit function tail correction is done. The function is taken from **worker.fun** in correction.method. 
+
+```{R}
+worker.fun = get(correction.method[["worker.fun"]], mode = "function")
+new.cps <- worker.fun(z[["w.length"]], z[["cps"]])
+z_old <- z # Saving for plots
+z[["cps"]] <- z[["cps"]] - new.cps[["tail"]]
+```
+
+```{R echo = FALSE}
+par(mfrow = c(1,1), oma = c(0,0,0,0), mar = c(4,4,1,4))
+plot(cps~w.length, data = z_old, bty = "L", type = "l", xlim = c(185,1120), ylim=c(0, 10000), col = "black")
+points(cps~w.length, data = z, xlab="", ylab="", xaxt="n", yaxt="n", type = "l", xlim = c(185,1120), col = "red")
+par(new=T)
+plot(new.cps$tail~z$w.length, bty = "L", type = "l", xlab="", ylab="", xaxt="n", yaxt="n", xlim = c(185,1120), ylim=c(-0.3, 0.3), col = "azure4", lwd = 2)
+axis(side = 4, las = 2)
+mtext(side = 4, line = 2, text = "tail correction", font = 2)
+legend("topright", bty = "n", legend=c("Old", "New", "Tail_Cor"), col = c("black", "red", "azure4"), lwd = 3)
+```
+
+
+```{R eval = FALSE, echo = FALSE}
+# Chunck to check if the whole function return the same results as the sum of its parts. The two number in the topleft are the RMSE (one for s_irrad_corrected and one for read_files2mspct+uvb_corrections). If equal to 0, Saul Goodman.
+# Get rid of "eval = FALSE" in chunk options to test.
+
+irrad.spct <- s_irrad_corrected(x = irrad, 
+                                descriptor = which_descriptor("2017-10-06"),
+                                #correction.method = MAYP11278_ylianttila.mthd,
+                                correction.method = MAYP11278_sun.mthd,
+                                return.cps = T,
+                                verbose = T)
+
+raw.mspct <- read_files2mspct(files = irrad, descriptor = which_descriptor("2017-10-06"))
+correction.method = MAYP11278_sun.mthd
+uvbCOR <- uvb_corrections(raw.mspct, spct.names = c(light = "light", filter = "filter", dark = "dark"),
+                          stray.light.method = correction.method[["stray.light.method"]],
+                          stray.light.wl = correction.method[["stray.light.wl"]],
+                          flt.dark.wl = correction.method[["flt.dark.wl"]],
+                          flt.ref.wl = correction.method[["flt.ref.wl"]],
+                          flt.Tfr = correction.method[["flt.Tfr"]],
+                          inst.dark.pixs = correction.method[["inst.dark.pixs"]],
+                          worker.fun = correction.method[["worker.fun"]],
+                          trim = correction.method[["trim"]], verbose = T)
+
+plot(cps~w.length, data = z, bty = "L", type = "l", xlim = c(185,1120), col = "red")
+points(cps~w.length, data = irrad.spct, xlab="", ylab="", xaxt="n", yaxt="n", type = "l", xlim = c(185,1120), col = "black")
+points(cps~w.length, data = uvbCOR, xlab="", ylab="", xaxt="n", yaxt="n", type = "l", xlim = c(185,1120), col = "azure4")
+legend("topleft", bty = "n", legend=c(paste(sqrt(sum((z$cps - irrad.spct$cps)^2))), paste(sqrt(sum((z$cps - uvbCOR$cps)^2)))))
+```
+
+## 11. Conversion from CPS to irradiance
+
+The final step is using a function from the photobiology package (cps2irrad). The function use the **"irrad.mult"**. Also cut the wavebands for which function is not defined (using "wl.range").
+
+```{R}
+cps2irrad <- function (x.sample, pre.fun = NULL, ...) 
+{
+    stopifnot(is.cps_spct(x.sample) && !is.null(getInstrDesc(x.sample)) && 
+        !is.null(getInstrSettings(x.sample)))
+    descriptor <- getInstrDesc(x.sample)
+    irrad.mult <- descriptor[["inst.calib"]][["irrad.mult"]]
+    if (!is.null(pre.fun)) {
+        x.sample <- pre.fun(x.sample, ...)
+    }
+    cps.col.sample <- grep("^cps", names(x.sample), value = TRUE)
+    stopifnot(length(cps.col.sample) == 1)
+    z <- as.generic_spct(x.sample)
+    z[[cps.col.sample]] <- NULL
+    z[["s.e.irrad"]] <- x.sample[[cps.col.sample]] * irrad.mult
+    setSourceSpct(z, time.unit = getTimeUnit(x.sample))
+    z <- copy_attributes(x.sample, z)
+    if (length(descriptor[["inst.calib"]][["wl.range"]]) == 
+        2) {
+        z <- clip_wl(z, descriptor[["inst.calib"]][["wl.range"]])
+    }
+  z
+}
+  
+IRR <- cps2irrad(z)
+```
+
+```{R echo = FALSE}
+par(mfrow = c(1,1), oma = c(0,0,0,0), mar = c(4,4,1,4))
+plot(cps~w.length, data = z, bty = "L", type = "l", xlim = c(185,1120), col = "black")
+par(new=T)
+plot(s.e.irrad~w.length, data = IRR, xlab="", ylab="", xaxt="n", yaxt="n", type = "l", xlim = c(185,1120), col = "red")
+par(new=T)
+plot(getInstrDesc(z)[["inst.calib"]][["irrad.mult"]]~z$w.length, bty = "L", type = "l", xlab="", ylab="", xaxt="n", yaxt="n", xlim = c(185,1120), ylim=c(0, 6.5e-5), col = "azure4", lwd = 2)
+axis(side = 4, las = 2)
+mtext(side = 4, line = 2, text = "irrad.mult function", font = 2)
+legend("topright", bty = "n", legend=c("Old", "New", "irrad.mult function"), col = c("black", "red", "azure4"), lwd = 3)
+```
+
+# Tests and ideas for analysis
+
+```{r echo = FALSE, message = FALSE, warning = FALSE}
+# Color palette
+qual_col_pals = brewer.pal.info[brewer.pal.info$category == 'qual',]
+cols = unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals)))
+
+# Import curve and convert to irrad
+BY1 <- multIrr(pattern = "BeoY3sun", date = "2016-04-28", smoothing = T, CorMeth = MAYP11278_sun.mthd, path <- "C:/Users/Localadmin_durandma/Dropbox/Work/Misc/Trials/Spectral_Irr/2016.04.21.FI.Lammi/BetulaYoung")
+BY1s <- multIrr(pattern = "BeoY3shade", date = "2016-04-28", smoothing = T, CorMeth = MAYP11278_sun.mthd, path <- "C:/Users/Localadmin_durandma/Dropbox/Work/Misc/Trials/Spectral_Irr/2016.04.21.FI.Lammi/BetulaYoung")
+df <- multIrrDf(BY1)
+dfs <- multIrrDf(BY1s)
+```
+
+## Smooting
+
+**How much smoothing the default smoothing function does**  
+The custom method seems to only smooth data below 320 or even 300nm (in UVb). 
+
+
+```{r message = FALSE, warning = FALSE}
+# Curve 87 should be deepest curve
+date = "2016-04-28"
+CorMeth = MAYP11278_sun.mthd
+l <- list(light = "C:/Users/Localadmin_durandma/Dropbox/Work/Misc/Trials/Spectral_Irr/2016.04.21.FI.Lammi/BetulaYoung/BeoY3sun00086.txt", 
+          filter = "C:/Users/Localadmin_durandma/Dropbox/Work/Misc/Trials/Spectral_Irr/2016.04.21.FI.Lammi/BetulaYoung/BeoY3sunPC.txt", 
+          dark = "C:/Users/Localadmin_durandma/Dropbox/Work/Misc/Trials/Spectral_Irr/2016.04.21.FI.Lammi/BetulaYoung/BeoY3sundark.txt")
+
+spc <- s_irrad_corrected(x = l, descriptor = which_descriptor(date, verbose = F), correction.method = CorMeth, verbose = F)
+spc_Scustom <- smooth_spct(spc, method = "custom") # Only really effective at w.length < 300
+spc_Slowess <- smooth_spct(spc, method = "lowess")
+spc_Ssupsmu <- smooth_spct(spc, method = "supsmu")
+```
+
+
+```{r echo = FALSE}
+### How much smoothing the default smoothing function does (does it do any???????)
+par(mfrow = c(1,1), oma = c(0,0,0,0), mar = c(4,5,1,4))
+plot(-500, bty = "L", xlim = c(250,900), ylim = c(0,1), xlab = "", ylab = "", xaxt = "n", yaxt = "n")
+axis(1, font = 2) ; axis(2, font = 2, las = 2)
+mtext(1, line = 2.5, text = "Wavelength", cex = 1.4)
+mtext(2, line = 3, text = "Irradiance", cex = 1.4)
+boxWB(lines = T)
+points(s.e.irrad~w.length, data = spc, type = "l")
+points(s.e.irrad~w.length, data = spc_Slowess, type = "l", lwd = 2, col = "blue")
+points(s.e.irrad~w.length, data = spc_Ssupsmu, type = "l", lwd = 2, col = "green4")
+points(s.e.irrad~w.length, data = spc_Scustom, type = "l", col = "red")
+legend("bottomright", bty = "n", legend=c("lowess", "supsmu", "custom", "original"), col = c("blue", "green4", "red", "black"), lwd = 2)
+```
+
+## Functional data analysis
+
+```{r echo = FALSE}
+M <- t(as.matrix(df[,2:ncol(df)])) # Irradiance in matrix (sun)
+M2 <- t(as.matrix(dfs[,2:ncol(dfs)])) # Irradiance in matrix (shade)
+fdf <- fdata(M, argvals = df[,1], names = list(main = "", xlab = "Wavelength (nm)", ylab = expression(paste("Spectral energy irradiance E(", lambda, ") (W m"^-2, " nm"^-1, ")", sep = ""))))
+fdf2 <- fdata(M2, argvals = dfs[,1], names = list(main = "", xlab = "Wavelength (nm)", ylab = expression(paste("Spectral energy irradiance E(", lambda, ") (W m"^-2, " nm"^-1, ")", sep = ""))))
+```
+
+```{R, echo = FALSE}
+par(mfrow = c(1,1), oma = c(0,0,0,0), mar = c(4,5,1,1))
+plot(fdf, bty = "L", ylim = c(0,max(fdf$data)), col = cols, main = "Sun")
+par(new = T)
+plot(fdf[depth.FM(fdf)$lmed], bty = "L", ylim = c(0,max(fdf$data)), col = "black", lwd = 1)
+
+plot(fdf2, bty = "L", ylim = c(0,max(fdf2$data)), col = cols, main = "Shade")
+par(new = T)
+plot(fdf2[depth.FM(fdf2)$lmed], bty = "L", ylim = c(0,max(fdf2$data)), col = "black", lwd = 1)
+```
+
+Not running this because last few takes a minute to run
+
+```{R, eval = FALSE}
+# Different methods to find deepest curve based around different depth functions
+depth.FM(fdf)$lmed # curve 87
+depth.RP(fdf)$lmed # curve 15
+depth.RPD(fdf)$lmed # curve 88
+depth.mode(fdf)$lmed # curve 36
+depth.RT(fdf)$lmed # curve 15
+depth.KFSD(fdf)$lmed # curve 34
+depth.FSD(fdf)$lmed # curve 98
+```
+
+## 1st Derivative
+
+```{r echo = FALSE, message = FALSE, warning = FALSE}
+# Get data normalized
+BY1n <- multIrr(pattern = "BeoY3sun", date = "2016-04-28", smoothing = T, norm = T, CorMeth = MAYP11278_sun.mthd, path <- "C:/Users/Localadmin_durandma/Dropbox/Work/Misc/Trials/Spectral_Irr/2016.04.21.FI.Lammi/BetulaYoung")
+BY1ns <- multIrr(pattern = "BeoY3shade", date = "2016-04-28", smoothing = T, norm = T, CorMeth = MAYP11278_sun.mthd, path <- "C:/Users/Localadmin_durandma/Dropbox/Work/Misc/Trials/Spectral_Irr/2016.04.21.FI.Lammi/BetulaYoung")
+dfn <- multIrrDf(BY1n)
+dfns <- multIrrDf(BY1ns)
+
+M <- t(as.matrix(dfn[,2:ncol(dfn)])) # Irradiance in matrix
+M2 <- t(as.matrix(dfns[,2:ncol(dfns)])) # Irradiance in matrix
+fdfn <- fdata(M, argvals = dfn[,1], names = list(main = "", xlab = "Wavelength (nm)", ylab = expression(paste("Spectral energy irradiance E(", lambda, ") (W m"^-2, " nm"^-1, ")", sep = ""))))
+fdfn2 <- fdata(M2, argvals = dfns[,1], names = list(main = "", xlab = "Wavelength (nm)", ylab = expression(paste("Spectral energy irradiance E(", lambda, ") (W m"^-2, " nm"^-1, ")", sep = ""))))
+
+depth.FM(fdfn)$lmed # curve 52
+depth.FM(fdfn2)$lmed # curve 10
+```
+
+### How smoothing impact 1st derivative calculation
+```{r echo = FALSE}
+fdfn.s0 <- fdata.deriv(fdfn, nbasis = 641, nderiv = 0)
+fdfn.s1 <- fdata.deriv(fdfn, nbasis = 200, nderiv = 0)
+fdfn.s2 <- fdata.deriv(fdfn, nbasis = 50, nderiv = 0)
+fdfn.d0 <- fdata.deriv(fdfn, nbasis = 641, nderiv = 1)
+fdfn.d1 <- fdata.deriv(fdfn, nbasis = 200, nderiv = 1)
+fdfn.d2 <- fdata.deriv(fdfn, nbasis = 50, nderiv = 1)
+
+par(mfrow = c(1,2), mar = c(4,4,1,1))
+plot(fdfn[52], lwd = 2, xlim = c(300, 400), ylim = c(0,1))
+lines(fdfn.s0[52], col = "red")
+lines(fdfn.s1[52], col = "blue")
+lines(fdfn.s2[52], col = "green4", lwd = 2)
+legend("topleft", bty = "n", legend = c("original curve", "nbasis = 641", "nbasis = 200", "nbasis = 50"), lwd = 1, col = c("black", "red", "blue", "green4"))
+
+plot(fdfn.d0[52], col = "red", xlim = c(300, 400))
+lines(fdfn.d1[52], col = "blue")
+lines(fdfn.d2[52], col = "green4", lwd = 2)
+```
+
+### Exemple comparison Sun/Shade
+```{r echo = FALSE}
+nb <- optim.basis(fdfn)$numbasis.opt
+nb2 <- optim.basis(fdfn2)$numbasis.opt
+fdfn.d0 <- fdata.deriv(fdfn, nbasis = nb, nderiv = 0)
+fdfn2.d0 <- fdata.deriv(fdfn2, nbasis = nb, nderiv = 0)
+fdfn.d1 <- fdata.deriv(fdfn, nbasis = nb, nderiv = 1)
+fdfn2.d1 <- fdata.deriv(fdfn2, nbasis = nb, nderiv = 1)
+```
+
+**Interesting inversion of amplitude between 440-460 nm (Why?)**
+
+```{r echo = FALSE}
+par(mfrow = c(3,2), mar = c(4,4,1,1))
+plot(fdfn.d0[52], lwd = 2, col = "deeppink3")
+lines(fdfn2.d0[10], lwd = 2, col = "royalblue3")
+legend("topleft", bty = "n", legend = c("sun", "shade"), lwd = 3, col = c("deeppink3", "royalblue3"))
+
+plot(fdfn.d1[52], lwd = 2, xlim = c(300, 400), col = "deeppink3")
+lines(fdfn2.d1[10], lwd = 2, col = "royalblue3")
+plot(fdfn.d1[52], lwd = 2, xlim = c(390, 460), col = "deeppink3")
+lines(fdfn2.d1[10], lwd = 2, col = "royalblue3")
+plot(fdfn.d1[52], lwd = 2, xlim = c(450, 650), col = "deeppink3")
+lines(fdfn2.d1[10], lwd = 2, col = "royalblue3")
+plot(fdfn.d1[52], lwd = 2, xlim = c(640, 750), col = "deeppink3")
+lines(fdfn2.d1[10], lwd = 2, col = "royalblue3")
+plot(fdfn.d1[52], lwd = 2, xlim = c(770, 900), col = "deeppink3")
+lines(fdfn2.d1[10], lwd = 2, col = "royalblue3")
+```
+
+## Calculate distribution indexes
+
+Home-made function that calculate mean, median and mode as well as SD and coefficient of variation at every wavelength from a list of spectra (norm normalize the spectra before doignthe calculations). 
+```{r}
+dfS <- specStat(BY1)
+dfN <- specStat(BY1, norm = T)
+```
+
+**Curious rise of CV up to 677nm, then decrease. Before 315nm, the CV is heaviliy influenced by very small deviations from the mean so very high CV.**
+
+```{r echo = FALSE}
+par(mfrow = c(1,1), oma = c(0,0,0,0), mar = c(4,5,1,4))
+plot(-500, bty = "L", xlim = c(250,900), ylim = c(0,1), xlab = "", ylab = "", xaxt = "n", yaxt = "n")
+axis(1, font = 2) ; axis(2, font = 2, las = 2)
+mtext(1, line = 2.5, text = "Wavelength", cex = 1.4)
+mtext(2, line = 3, text = "Irradiance", cex = 1.4)
+boxWB(lines = T)
+
+points(Mean~w.length, data = dfS, type = "l", xlim = c(250,900), col = "black")
+points(Med~w.length, data = dfS, type = "l", xlim = c(250,900), col = "green")
+points(Mode~w.length, data = dfS, type = "l", xlim = c(250,900), col = "red")
+legend(y=1,x=800, bty = "n", legend = c("Mean", "Median", "Mode", "CV (%)"), col = c("black","green","red","azure4"), lwd = 2)
+
+par(new=T)
+plot(-500, bty = "L", xlim = c(250,900), ylim = c(0,max(dfS[dfS$w.length > 310,]$CV)), xlab = "", ylab = "", xaxt = "n", yaxt = "n") #
+axis(4, font = 2, las = 2) ; mtext(4, line = 2.5, text = "CV (%)", cex = 1.4)
+points(CV~w.length, data = dfS[dfS$w.length > 310,], type = "l", xlim = c(250,900), col = "azure4")
+maxCV <- dfS[dfS$w.length > 350,]$w.length[which.max(dfS[dfS$w.length > 350,]$CV)]
+legend("bottomright", bty = "n", legend = c(expression(paste("max CV at ", lambda, " = ")), paste(maxCV)))
+# Not optimal but for w.length < 324 the irradiance is so low that CV skyrocket at the slightest deviation from the mean 
+```
+
+## Thick-pen transfomation
+
+```{R}
+### Thick-pen transformation
+thickPen <- function(spec = spec, thickness = 15)
+{
+  df <- data.frame("w.length" = numeric(0), "low" = numeric(0), "high" = numeric(0))
+  for(i in 1:nrow(spec))
+  {
+    LOW <- min(spec$s.e.irrad[i:ifelse(i+thickness > nrow(spec), nrow(spec), i+thickness)], na.rm = T)
+    UP <- max(spec$s.e.irrad[i:ifelse(i+thickness > nrow(spec), nrow(spec), i+thickness)], na.rm = T)
+    df <- rbind(df, c(spec$w.length[i],LOW,UP))
+  }
+  colnames(df) <- c("w.length", "lower", "upper")
+  return(df)
+}
+
+calTMPA <- function(list = listTP)
+{
+  TMPA <- vector()
+  for(i in 1:nrow(list[[1]]))
+  {
+    # Select "i" element of certain column "col" in list of multiple similar dataframes. 
+    sList <- function(iter = i, list = list, col = "upper")
+    {
+      if(col == "upper"){
+        x <- lapply(list, subset, select = upper)
+      } else if(col == "lower"){
+        x <- lapply(list, subset, select = lower)
+      }
+      y <- matrix(unlist(x), ncol = length(x), nrow = nrow(x[[1]]), byrow = F)
+      z <- as.numeric(y[iter,])
+      return(z)
+    }
+    
+    xTMPA <- (min(sList(i, list, "upper"))-max(sList(i, list, "lower"))) / (max(sList(i, list, "upper")) - min(sList(i, list, "lower")))
+    TMPA <- append(TMPA, values = xTMPA)
+  }
+  TMPA[is.na(TMPA)] <- 0
+  return(TMPA)
+}
+```
+
+```{R}
+spc <- BY1[[87]] # Deepest curve (sun)
+spc2 <- BY1s[[8]]  # Deepest curve (shade)
+
+# Normalization
+spec <- normalize(spc)
+spec2 <- normalize(spc2)
+
+# Thinkness = 20
+dfTP1 <- thickPen(spec, thickness = 20)
+dfTPs1 <- thickPen(spec2, thickness = 20)
+listTP1 <- list(dfTP1, dfTPs1)
+TMPA1 <- calTMPA(list = listTP1)
+
+# Thinkness = 70
+dfTP2 <- thickPen(spec, thickness = 70)
+dfTPs2 <- thickPen(spec2, thickness = 70)
+listTP2 <- list(dfTP2, dfTPs2)
+TMPA2 <- calTMPA(list = listTP2)
+```
+
+**Before normalization:**
+```{R echo = FALSE}
+# Simple plot before normalization
+par(mfrow = c(1,1), oma = c(0,0,0,0), mar = c(4,5,1,4))
+plot(-500, bty = "L", xlim = c(250,900), ylim = c(0,1), xlab = "", ylab = "", xaxt = "n", yaxt = "n")
+axis(1, font = 2) ; axis(2, font = 2, las = 2)
+mtext(1, line = 2.5, text = "Wavelength", cex = 1.4)
+mtext(2, line = 3, text = "Irradiance", cex = 1.4)
+boxWB(lines = T)
+points(s.e.irrad~w.length, data = spc, type = "l", xlim = c(250,900), col = "deeppink3")
+points(s.e.irrad~w.length, data = spc2, type = "l", xlim = c(250,900), col = "royalblue3")
+```
+
+**Thick-Pen Tranformation exemple:**
+```{R echo = FALSE}
+par(mfrow = c(2,2), oma = c(0,0,0,0), mar = c(4,4,1,1))
+plot(-500, bty = "L", xlim = c(250,900), ylim = c(0,1), xlab = "", ylab = "", xaxt = "n", yaxt = "n")
+axis(1, font = 2) ; axis(2, font = 2, las = 2)
+mtext(1, line = 2.5, text = "Wavelength", cex = 1.4)
+mtext(2, line = 3, text = "Irradiance", cex = 1.4)
+
+polygon(y = c(dfTP1$lower, rev(dfTP1$upper)), x = c(dfTP1$w.length, rev(dfTP1$w.length)), border = NA, col = addTrans("deeppink1", 150))
+polygon(y = c(dfTPs1$lower, rev(dfTPs1$upper)), x = c(dfTPs1$w.length, rev(dfTPs1$w.length)), border = NA, col = addTrans("royalblue1", 150))
+points(s.e.irrad~w.length, data = spec, type = "l", lwd = 2, col = "deeppink3")
+points(s.e.irrad~w.length, data = spec2, type = "l", lwd = 2, col = "royalblue3")
+
+plot(-500, bty = "L", xlim = c(250,900), ylim = c(-1,1), xlab = "", ylab = "", xaxt = "n", yaxt = "n")
+axis(1, font = 2) ; axis(2, font = 2, las = 2)
+mtext(1, line = 2.5, text = "Wavelength", cex = 1.4)
+mtext(2, line = 3, text = "TMPA", cex = 1.4)
+points(TMPA1~dfTP1$w.length, type = "l", lwd = 3, col = "black")
+abline(h=0, col = "gray50", lty = 2, lwd = 2)
+
+plot(-500, bty = "L", xlim = c(250,900), ylim = c(0,1), xlab = "", ylab = "", xaxt = "n", yaxt = "n")
+axis(1, font = 2) ; axis(2, font = 2, las = 2)
+mtext(1, line = 2.5, text = "Wavelength", cex = 1.4)
+mtext(2, line = 3, text = "Irradiance", cex = 1.4)
+
+polygon(y = c(dfTP2$lower, rev(dfTP2$upper)), x = c(dfTP2$w.length, rev(dfTP2$w.length)), border = NA, col = addTrans("deeppink1", 150))
+polygon(y = c(dfTPs2$lower, rev(dfTPs2$upper)), x = c(dfTPs2$w.length, rev(dfTPs2$w.length)), border = NA, col = addTrans("royalblue1", 150))
+points(s.e.irrad~w.length, data = spec, type = "l", lwd = 2, col = "deeppink3")
+points(s.e.irrad~w.length, data = spec2, type = "l", lwd = 2, col = "royalblue3")
+
+plot(-500, bty = "L", xlim = c(250,900), ylim = c(-1,1), xlab = "", ylab = "", xaxt = "n", yaxt = "n")
+axis(1, font = 2) ; axis(2, font = 2, las = 2)
+mtext(1, line = 2.5, text = "Wavelength", cex = 1.4)
+mtext(2, line = 3, text = "TMPA", cex = 1.4)
+points(TMPA2~dfTP2$w.length, type = "l", lwd = 3, col = "black")
+abline(h=0, col = "gray50", lty = 2, lwd = 2)
+```
+
+## Spectrum density plot
+
+**A trial of plotting a density estimator of the 100 spectra. In red in the median, and darker shades of gray are for 1-99, 10-90 and 25-75 quantile, respectively.**
+
+```{R message = FALSE, warning = FALSE}
+source("C:/Users/Localadmin_durandma/Dropbox/Work/R/Spectral_Irr/SpecDens.R")
+P <- "C:/Users/Localadmin_durandma/Dropbox/Work/Misc/Trials/Spectral_Irr/2016.04.21.FI.Lammi/BetulaYoung"
+plotSpecDens(pattern = "BeoY4sun", path = P, date = "2016-04-28", CorMeth = MAYP11278_sun.mthd)
+```
+

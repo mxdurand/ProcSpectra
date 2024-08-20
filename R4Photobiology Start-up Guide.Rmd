@@ -1,0 +1,764 @@
+---
+title: "R4Photobiology Start-up Guide"
+author: "Maxime Durand"
+date: '28/06/2022'
+output:
+   prettydoc::html_pretty:
+    theme: tactile
+    highlight: github
+    math: katex
+    fig_height: 8
+    fig_width: 11
+    dpi: 300
+    toc: yes
+    toc_depth: 6
+---
+
+# Foreword
+
+This document is made with the objective of being a start-up point to delve into the possibilities offered by the R4Photobiology package suite. Only a brief overview of the main aspect will be descibed here. For more information and more specific help regarding each of the package, please consult the [webpage.](https://www.r4photobiology.info/package-status/) For more a better theoretical understanding of the concepts discussed below, please have a look at ***Beyond the visible: a handbook of best practice in plant UV photobiology** available [here.](https://helda.helsinki.fi/handle/10138/37558)
+
+# Installation
+
+* To process raw spectrometer data, we first need to install the packages **ooacquire** and **rOmnidriver**. These packages require that some dependencies be installed first:
+
+  + Rtools42 (for R version 4.2.X)
+  + Java (32 & 64 bits)
+  + Cran packages (rJava & devtools)
+  
+***  
+     
+     
+     
+**1. Rtools42**
+
+Rtools42 can be accessed through [this page.](https://cran.r-project.org/bin/windows/Rtools/rtools42/rtools.html) Older versions of Rtools for older version or R are available [here.](https://cran.r-project.org/bin/windows/Rtools/) The default installation location will be *C:/Rtools42/*
+
+![](figs/Rtools42_1.png)
+  
+***  
+     
+     
+     
+**2. Java**
+
+On most computers, **both 32 bits and 64 bits Java** need to be installed and up to date. Download links for Java can be found [here.](https://www.java.com/en/download/manual.jsp)
+
+![](figs/Java_1.png)
+  
+You will also need the Java Development Kit, available [here.](https://www.oracle.com/java/technologies/downloads/#jdk18-windows)
+
+![](figs/Java_2.png)
+  
+***  
+     
+    
+    
+**3. CRAN packages**
+
+**rJava** provide the interface for R to use Java, and **devtools** will let us install packages directly from *GitHub*.
+
+```{R, eval = FALSE}
+# Install packages from CRAN
+install.packages("photobiology")
+install.packages("photobiologyWavebands")
+install.packages("photobiologyPlants")
+install.packages("photobiologyFilters")
+install.packages("photobiologyLamps")
+install.packages("photobiologyLEDs")
+
+install.packages("ggspectra")
+install.packages("tidyverse")
+install.packages("rJava")
+install.packages("devtools")
+```
+
+If asked, install from sources the packages that needs compilation.
+
+![](figs/devtools_2.png)
+
+**Warning:** If source packages fail to be installed properly, you may not be able to go further. This could be due to a bad installation of *Rtools*. The best solution is to check the previous steps to make sure everything was installed properly, and is recognized by R. If all else fail, the following code forces the installation of binaries (usually an older version), however it does not guarantee that the next steps will work.
+
+```{R, eval = FALSE}
+install.packages("rlang", type = "binary")
+install.packages("pkgdown", type = "binary")
+```
+
+**An example of a failed source installation:**
+*Here, R was looking for a version of Rtools called **rtools42_test** that did not exist on this computer.*
+
+![](figs/devtools_3.png)
+   
+***  
+     
+     
+     
+**4. rOmnidriver**  
+
+Now that all dependencies are installed, we can get the *rOmnidriver* package from GitHub. This is what the console should look like:
+
+```{R, eval = FALSE}
+devtools::install_github("aphalo/romnidriver")
+```
+  
+***  
+  
+![](figs/rOmnidriver_1.png)
+
+***  
+     
+     
+     
+**5. ooacquire**    
+
+Finally, the *ooacquire* package can similarly be installed from GitHub. The console should look like this:
+```{R, eval = FALSE}
+devtools::install_github("aphalo/ooacquire")
+```
+   
+Again, you may need to install from sources the packages that needs compilation.
+    
+![](figs/ooacquire_1.png)   
+
+A proper installation of *ooacquire* should look like this:
+
+![](figs/ooacquire_2.png) 
+    
+***      
+  
+
+# Processing step-by-step
+
+```{R, echo  = FALSE, warning = FALSE, message = FALSE}
+knitr::opts_knit$set(root.dir = "C:/Users/Localadmin_durandma/Dropbox/SpecS/RcodeNewExample/")
+```
+
+```{R, message = FALSE}
+# Load necessary packages
+library(photobiology)
+library(photobiologyWavebands)
+library(photobiologyPlants)
+library(ooacquire)
+```
+
+```{R, echo = FALSE}
+irrad <- list(light = "12asnow.txt", filter = "12asnowPC.txt", dark = "12asnowdark.txt")
+raw.mspct <- ooacquire::read_files2mspct(files = irrad, descriptor = which_descriptor("2017-10-06"))
+wvl <- raw.mspct[[1]]$w.length
+light <- raw.mspct[[1]]$counts
+filter <- raw.mspct[[2]]$counts
+dark <- raw.mspct[[3]]$counts
+```
+
+**1. Import spectrometer data as spectra in R**
+
+* First, one has to import the wavelength and raw count data in R. Here, wavelength are in a vector called "**wvl**", and three raw counts data are the objects **light**, **filter**, and **dark**. Data can also be imported as data.frame if one choses.
+
+```{r}
+# Imported data
+head(wvl, 50)
+head(light, 50)
+head(filter, 50)
+head(dark, 50)
+```
+
+* Then, each scan is built by associating the raw counts and the wavelength in one "**raw spectrum**" object.
+
+```{r}
+# Building each spectra
+light.spct <- raw_spct(w.length = wvl, counts = light)
+filter.spct <- raw_spct(w.length = wvl, counts = filter)
+dark.spct <- raw_spct(w.length = wvl, counts = dark)
+```
+
+```{r}
+light.spct
+filter.spct
+dark.spct
+```
+
+* All three scans can also be merge into one "**raw multi-spectra**" object.
+
+```{r}
+# Merging into a multi-spectra object
+raw.mspct <- as.raw_mspct(list("light" = light.spct, "filter" = filter.spct, "dark" = dark.spct))
+raw.mspct
+```
+
+* Each scan can be shown with the following line:
+
+```{r}
+autoplot(raw.mspct, range = c(300, 850))
+```
+    
+***    
+    
+
+**2. Conversion to counts per seconds**
+
+* Now, the processing of each spectrum can begin. First, one has to consider counts outside the range of the spectrometer as missing data. Typically, those values are recorded as the maximum count possible by the spectrometer (*e.g.* 60 000 counts) and must be changed to *NA*.
+
+```{r}
+max.counts = 60000
+
+temp.light.spct <- trim_counts(light.spct, range = c(NA, max.counts-1))
+temp.filter.spct <- trim_counts(filter.spct, range = c(NA, max.counts-1))
+temp.dark.spct <- trim_counts(dark.spct, range = c(NA, max.counts-1))
+```
+
+* By a phenomenon similar to "blooming" in camera sensors, wells adjacents to saturated ones may give inflated values. This removes data from these wells. This is because when a sensor well gets saturated some of the charge migrates to adjacent wells in the detector increasing their readings.
+
+```{r}
+temp.light.spct <- bleed_nas(temp.light.spct)
+temp.filter.spct <- bleed_nas(temp.filter.spct)
+temp.dark.spct <- bleed_nas(temp.dark.spct)
+``` 
+
+* Some known bad pixels, where the spectrometer gives consistently bad values, may need to be removed. This is done by replacing the values of the bad pixels by the average of the neighboring pixels. 
+
+```{r}
+skip_bad_pixs <- function(x, bad.pixs = NULL)
+{
+  if(is.null(bad.pixs)){return(x)}
+  
+  counts.cols <- grep("^counts", names(x), value = TRUE)
+  for (col in counts.cols) {
+    x[bad.pixs, col] <-
+      (x[bad.pixs - 1, col] + x[bad.pixs + 1, col]) / 2
+  }
+  return(x)
+}
+
+bad_pixs <- c(123, 380, 388, 467, 697, 1829, 1994)
+tmp.light.spct <- skip_bad_pixs(temp.light.spct, bad.pixs = bad_pixs)
+tmp.filter.spct <- skip_bad_pixs(temp.filter.spct, bad.pixs = bad_pixs)
+tmp.dark.spct <- skip_bad_pixs(temp.dark.spct, bad.pixs = bad_pixs)
+```
+
+```{r, echo = FALSE}
+plot(counts~w.length, data = temp.light.spct, bty = "L", type = "l", xlim = c(185,1120), ylim=c(0, 37000), col = "black")
+points(counts~w.length, data = tmp.light.spct, xlab="", ylab="", xaxt="n", yaxt="n", type = "l", xlim = c(185,1120), col = "red")
+legend("topleft", bty = "n", legend=c("With bad pixels", "Corrected"), col = c("black", "red"), lwd = 3)
+```
+
+* With some instruments, a linearization correction to raw counts data is necessary. This is either retrieved from the instrument's firmware, or possibly a replacement set by the user. 
+
+**An example of a linearization function from our spectrometer**
+```{r, echo = FALSE}
+DES = which_descriptor("2017-10-06")
+before_linearization <- 0:60000
+after_linearization <- DES$inst.calib$nl.fun(before_linearization)
+
+plot(after_linearization~before_linearization, type = "l", col = "red", xlab = "Counts before linearization", ylab = "Counts after linearization")
+abline(0,1)
+legend("topleft", bty = "n", legend=paste("y =", round(coef(lm(after_linearization~before_linearization-1)),5), "*x"))
+```
+
+```{r}
+linearizeCounts <- function(x, coef)
+{
+  y <- x * coef
+  return(y)
+}
+
+slope = 1.03403933042735
+
+temp.light.spct$counts <- linearizeCounts(tmp.light.spct$counts, coef = slope)
+temp.filter.spct$counts <- linearizeCounts(tmp.filter.spct$counts, coef = slope)
+temp.dark.spct$counts <- linearizeCounts(tmp.dark.spct$counts, coef = slope)
+```
+
+**Effect on our example light spectrum:**
+```{r, echo = FALSE}
+plot(counts~w.length, data = tmp.light.spct, bty = "L", type = "l", xlim = c(185,1120), ylim=c(0, 37000), col = "black")
+points(counts~w.length, data = temp.light.spct, xlab="", ylab="", xaxt="n", yaxt="n", type = "l", xlim = c(185,1120), col = "red")
+legend("topleft", bty = "n", legend=c("Before linearization", "After linearization"), col = c("black", "red"), lwd = 3)
+```
+
+* To remove counts due to electrical noise, a set of known *dark* pixels (*e.g.* manually taped to prevent any photon to be collected) is averaged, and removed from the rest of the data. Here the dak pixels are the first four:
+
+```{r}
+inst.dark.pixs = 1:4
+inst.dark.wl <- range(temp.light.spct[["w.length"]][inst.dark.pixs])
+
+tmp.light.spct <- fshift(temp.light.spct, range = inst.dark.wl)
+tmp.filter.spct <- fshift(temp.filter.spct, range = inst.dark.wl)
+tmp.dark.spct <- fshift(temp.dark.spct, range = inst.dark.wl)
+```
+
+```{r, echo = FALSE}
+plot(counts~w.length, data = temp.light.spct, bty = "L", type = "l", xlim = c(185,1120), ylim=c(0, 37000), col = "black")
+points(counts~w.length, data = tmp.light.spct, xlab="", ylab="", xaxt="n", yaxt="n", type = "l", xlim = c(185,1120), col = "red")
+legend("topleft", bty = "n", legend=c("Before dark pixel shift", "After dark pixel shift"), col = c("black", "red"), lwd = 3)
+```
+
+* Finally, raw counts can be **converted in counts per seconds** (or CPS), using the integration time.
+
+```{r}
+counts_to_cps <- function(x, integ.time.ms)
+{
+  y <- cps_spct(w.length = x$w.length, cps = x$counts / integ.time.ms * 1e3)
+  return(y)
+}
+
+integ <- 3500
+
+cps.light.spct <- counts_to_cps(tmp.light.spct, integ.time.ms = integ)
+cps.filter.spct <- counts_to_cps(tmp.filter.spct, integ.time.ms = integ)
+cps.dark.spct <- counts_to_cps(tmp.dark.spct, integ.time.ms = integ)
+
+# Merging into a multi-spectra object
+cps.mspct <- as.cps_mspct(list("light" = cps.light.spct, "filter" = cps.filter.spct, "dark" = cps.dark.spct))
+cps.mspct
+
+autoplot(cps.mspct, range = c(300, 850))
+```
+    
+***    
+    
+**3. Dark correction**
+
+A spectrometer measurement in the dark provides additional correction of the instrumental noise during data collection (*e.g.* due to temperature). The dark spectrum can be subtracted to both the data. The dark spectrum is deleted after that, as it has no other uses.
+
+```{r}
+dark_correction <- function(x, dark)
+{
+  z <- cps_mspct()
+  
+  drk <- x[[dark]]
+  scans <- names(x)[-which(names(x) == dark)]
+  
+  for (i in scans)
+  {
+    z[[i]] <- x[[i]]
+    z[[i]]$cps <- x[[i]]$cps - drk$cps
+  }
+  return(z)
+}
+
+ref.cps.mspct <- dark_correction(x = cps.mspct, dark = "dark")
+```
+
+
+```{r, echo = FALSE}
+plot(cps~w.length, data = cps.mspct$light, bty = "L", type = "l", xlim = c(185,1120), ylim=c(0, 10000), col = "black")
+points(cps~w.length, data = cps.mspct$dark, xlab="", ylab="", xaxt="n", yaxt="n", type = "l", xlim = c(185,1120), col = "azure4")
+points(cps~w.length, data = ref.cps.mspct$light, xlab="", ylab="", xaxt="n", yaxt="n", type = "l", xlim = c(185,1120), col = "red")
+legend("topleft", bty = "n", legend=c("Before", "After", "Dark"), col = c("black", "red", "azure4"), lwd = 3)
+```
+
+    
+***    
+   
+**4. Stray-light correction**
+
+The monochromator inside the spectrometer does not perfectly transfer each radiation to the specific wavelength. This is **especially important for UVs where small differences can have a large impact.** To mitiguate this, two corrections are applied.
+
+* The slit-tail correction
+
+The figure below show the spectrum measured under a helium–neon laser which emits at a very narrow wavelength of 632.8 nm. An exponential fit in applied to the measured response. This fit is subtracted to the data, resulting in a limited residual slit tail. 
+ 
+![](figs/slit-tail.png)
+   
+***    
+    
+
+* The stray light correction (filter)
+
+It is also recommended to take a recording of the light using a UV filter (*e.g.* polycarbonate filter).     
+   
+The function then compute a ratio of *light/filter* in the waveband [193-209.5nm] (by default) that is supposed to be free of radiation (and thus give the same reading). In the example below, the ratio is **0.9799**.
+
+$ratio_{dark} = \frac{light_{193-209.5nm}}{filter_{193-209.5nm}}$
+   
+Then, the function applies two different corrections based on wavelength:  
+    
+* **For UV waveband [228.5-379nm]**, the recorded irradiance in the filter is divided by the ratio, and subtracted to the light scan:
+
+$light_{corrected} = light_{228.5-379nm} - \frac{filter_{228.5-379nm}}{ratio_{dark}}$
+
+* **For every wavelength > 379nm**, the recorded irradiance in the filter *in the waveband [360-379nm]*  is divided by the ratio, and subtracted to the light scan:  
+   
+$light_{corrected} = light_{> 379nm} - \frac{filter_{360-379nm}}{ratio_{dark}}$
+
+
+```{r, fig.height = 12, fig.width = 8}
+cor.cps.mspct <- filter_correction(x = ref.cps.mspct[["light"]], flt = ref.cps.mspct[["filter"]], 
+                                   stray.light.method = "sun",
+                                   stray.light.wl = c(218.5, 228.5),
+                                   flt.dark.wl = c(193, 209.5),
+                                   flt.ref.wl = c(360, 379.5),
+                                   verbose = TRUE)
+```
+
+
+```{r, echo = FALSE}
+par(mfrow = c(2,1), oma = c(0,0,0,0), mar = c(4,4,1,1), bty = "L")
+plot(cps~w.length, data = ref.cps.mspct$light, bty = "L", type = "l", xlim = c(185,1120), ylim=c(0, 10000), col = "black")
+points(cps~w.length, data = cor.cps.mspct, xlab="", ylab="", xaxt="n", yaxt="n", type = "l", xlim = c(185,1120), col = "red")
+legend("topleft", bty = "n", legend=c("Before", "After"), col = c("black", "red"), lwd = 3)
+
+plot(cps~w.length, data = ref.cps.mspct$light, bty = "L", type = "l", xlim = c(185,400), ylim=c(0, 2000), col = "gray30", lwd = 2)
+points(cps~w.length, data = cor.cps.mspct, xlab="", ylab="", xaxt="n", yaxt="n", type = "l", xlim = c(185,1120), col = "red", lwd = 2)
+legend("topleft", bty = "n", legend=c("Before", "After"), col = c("black", "red"), lwd = 3)
+
+```
+
+**In the case where no filter recording was taken**, a simpler correction of stray light can be applied. If the number of CPS in the waveband [218-228nm] (where there can be stray light) is higher than the CPS in the waveband [193-209nm] (where it is completely dark), then the average of the CPS in the waveband [218-228nm] is subtracted to the light scan:
+
+$if$ $light_{218-228nm} > light_{193-209nm}:$
+
+$light_{corrected} = light - light_{218-228nm}$
+
+```{r}
+cor2.cps.mspct <- no_filter_correction(x = ref.cps.mspct[["light"]],
+                                       stray.light.wl = c(218.5, 228.5),
+                                       flt.dark.wl = c(193, 209.5), 
+                                       verbose = TRUE)
+```
+
+```{r, echo = FALSE}
+par(mfrow = c(2,1), oma = c(0,0,0,0), mar = c(4,4,1,1), bty = "L")
+plot(cps~w.length, data = ref.cps.mspct$light, bty = "L", type = "l", xlim = c(185,1120), ylim=c(0, 10000), col = "black")
+points(cps~w.length, data = cor2.cps.mspct, xlab="", ylab="", xaxt="n", yaxt="n", type = "l", xlim = c(185,1120), col = "red")
+legend("topleft", bty = "n", legend=c("Before", "After"), col = c("black", "red"), lwd = 3)
+
+plot(cps~w.length, data = ref.cps.mspct$light, bty = "L", type = "l", xlim = c(185,400), ylim=c(0, 2000), col = "gray30", lwd = 2)
+points(cps~w.length, data = cor2.cps.mspct, xlab="", ylab="", xaxt="n", yaxt="n", type = "l", xlim = c(185,1120), col = "red", lwd = 2)
+legend("topleft", bty = "n", legend=c("Before", "After"), col = c("black", "red"), lwd = 3)
+
+```
+
+   
+***      
+  
+**5. Conversion from CPS to irradiance**
+
+* **After all corrections are done, the final conversion from CPS to irradiance values is performed.** The conversion is based on a wavelength-dependent conversion factor, that is either provided by the manufacturer of the spectrometer, or calibrated with a lamp of a known output.
+
+```{r}
+cps_to_irrad <- function(x, conv_func, clip)
+{
+  y <- source_spct("w.length" = x$w.length, s.e.irrad = x$cps * conv_func)
+  y <- clip_wl(y, c(251, 899))
+  return(y)
+}
+
+conversion_factors <- which_descriptor("2017-10-06")[["inst.calib"]][["irrad.mult"]]
+e.final.spct <- cps_to_irrad(x = cor.cps.mspct, conv_func = conversion_factors, clip = c(c(251, 899)))
+```
+
+```{r, echo = FALSE}
+par(mfrow = c(1,1), oma = c(0,0,0,0), mar = c(4,10,1,5))
+plot(cps~w.length, data = cor.cps.mspct, bty = "L", type = "l", xlim = c(185,1120), col = "black", ylab = "", xlab = "")
+mtext(side = 1, line = 2, text = "Wavelength (nm)", font = 2)
+mtext(side = 2, line = 2, text = "CPS", font = 2)
+par(new=T)
+plot(s.e.irrad~w.length, data = e.final.spct, xlab="", ylab="", xaxt="n", yaxt="n", type = "l", xlim = c(185,1120), col = "red")
+axis(side = 2, line = 4)
+mtext(side = 2, line = 7, text = "Energy irradiance (W m-2)", font = 2)
+par(new=T)
+plot(conversion_factors~cor.cps.mspct$w.length, bty = "L", type = "l", xlab="", ylab="", xaxt="n", yaxt="n", xlim = c(185,1120), ylim=c(0, 6.5e-5), col = "azure4", lwd = 2)
+axis(side = 4, las = 1)
+mtext(side = 4, line = 3.5, text = "Conversion function", font = 2)
+legend("topright", bty = "n", legend=c("CPS", "Energy irradiance", "Conversion function"), col = c("black", "red", "azure4"), lwd = 3)
+```
+
+**We can now easily convert to photon irradiance.** Units are by default mol m-2 s-1
+
+```{r}
+q <- as_quantum_mol(w.length = e.final.spct$w.length, s.e.irrad = e.final.spct$s.e.irrad) * 1e6
+q.final.spct <- source_spct(w.length = e.final.spct$w.length, s.q.irrad = q)
+
+# The reverse can be done with the function as_energy()
+```
+
+```{r, echo = FALSE}
+par(mfrow = c(1,1), oma = c(0,0,0,0), mar = c(4,5,1,5))
+plot(s.e.irrad~w.length, data = e.final.spct, xlab="", ylab="", xaxt="n", yaxt="n", type = "l", xlim = c(250,900), col = "black")
+axis(side = 1, font = 2)
+axis(side = 2, font = 2, las = 2)
+mtext(side = 1, line = 2, text = "Wavelength (nm)", font = 2, cex = 1.2)
+mtext(side = 2, line = 3.3, text = "Energy irradiance (W m-2)", font = 2, cex = 1.2)
+par(new = T)
+plot(s.q.irrad~w.length, data = q.final.spct, xlab="", ylab="", xaxt="n", yaxt="n", type = "l", xlim = c(250,900), col = "red")
+axis(side = 4, font = 2, las = 2)
+mtext(side = 4, line = 3.5, text = expression(bold(paste("Photon irradiance (µmol m-2 s-1)"))), font = 2)
+legend("topright", bty = "n", legend=c("Energy irradiance", "Photon irradiance"), col = c("black", "red"), lwd = 3)
+```
+    
+    
+***       
+      
+# Bracketing for precise UV measurements
+
+When recording the whole spectrum, **UVs are often measured at less-than-optimal resolution**, since they represent a smaller portion of the total spectrum. Bracketing merges scans taken at different integration times to allows for the **recording of the whole spectrum at high resolution**. 
+
+Here we have two scans, one measured at low integration time (*short scan*), where all of the wavelengths are recorded, and one at high integration time (*long scan*), where only the UVs are recorded:
+
+```{r}
+short.names <- list(light = "MP1sun.txt", filter = "MP1sunPC.txt", dark = "MP1sundark.txt")
+short <- s_irrad_corrected(x = short.names, descriptor =  which_descriptor("2020-06-10", ooacquire::MAYP112785_descriptors), correction.method = MAYP112785_sun.mthd, return.cps = TRUE)
+
+long.names <- list(light = "MP1sunlong.txt", filter = "MP1sunlongPC.txt", dark = "MP1sunlongdark.txt")
+long <- s_irrad_corrected(x = long.names, descriptor =  which_descriptor("2020-06-10", ooacquire::MAYP112785_descriptors), correction.method = MAYP112785_sun.mthd, return.cps = TRUE)
+
+autoplot(short)
+autoplot(long)
+```
+
+In some conditions, **even if the two scans are taken right after the other, significant change in the light can occur**. Thus, one scan has to be scaled to the other to ensure proper merging. Here we scale the two scans based on the [250-380nm] waveband, using a polynomial equation of order 2:
+
+```{r}
+# Select CPS from 250nm to last recorded wavelength in long scan to apply correction on
+short_wb <- short[short$w.length > 250 & short$w.length < 380, "cps"]
+long_wb <- long[long$w.length > 250 & long$w.length < 380, "cps"]
+
+# Fit a second order polynomial equation (because difference between long and short is not linear for smaller wavelengths)
+library(minpack.lm)
+
+f <- nlsLM(short_wb ~ a*long_wb^2 + b*long_wb + c, start = list(a = 1, b = 1, c = 1))
+a = coef(f)[1]
+b = coef(f)[2]
+c = coef(f)[3]
+```
+
+```{r, echo  = FALSE}
+par(mfrow = c(1,1), oma = c(0,0,0,0), mar = c(4,4,1,1), bty = "L")
+plot(short_wb ~ long_wb, type = "p", pch = 20)
+abline(0,1, col = "black")
+curve(a*x^2 + b*x + c, from = 0, to = 30000, add = T, col = "red", lwd = 2)
+legend("bottomright", bty = "n", legend = expression(paste("Y = -0.000000844x"^2, "+ 0.961x - 4.39")))
+```
+
+We can now apply the scaling:
+
+```{r}
+long_corrected <- long
+long_corrected$cps <- a*long_corrected$cps^2 + b*long_corrected$cps + c
+```
+
+And finally, we bracket the scans, replacing the irradiance value in the short scans by the scaled long one for wavelengths < 380nm:
+
+```{r}
+short_bracketed <- short
+short_bracketed[short_bracketed$w.length < 380,"cps"] <- long_corrected[long_corrected$w.length < 380,"cps"]
+```
+
+```{r, echo = FALSE}
+plot(-500, bty = "L", xaxt = "n", yaxt = "n", xlab = "", ylab = "", xlim = c(250,400), ylim = c(0,40000))
+points(cps ~ w.length, data = short, type = "l", lwd = 4, col = "black")
+points(cps ~ w.length, data = long, type = "l", lwd = 1, col = "red")
+points(cps ~ w.length, data = long_corrected, type = "l", lwd = 2, col = "green4")
+axis(side = 1, font = 2)
+axis(side = 2, font = 2, las = 2)
+mtext(side = 1, line = 2, text = "Wavelength (nm)", font = 2, cex = 1.2)
+mtext(side = 2, line = 3.3, text = "CPS", font = 2, cex = 1.2)
+legend("topleft", bty = "n", legend = c("short scan", "long scan", "corrected long (scaled)"), col = c("black", "red", "green4"), lwd = 5)
+```
+
+    
+***      
+  
+# Spectral ratios and waveband construction
+
+Using the package **photobiologyWavebands**, we can construct a waveband object: 
+
+```{r}
+PAR.wb <- waveband(c(400, 700), wb.name = "PAR")
+UVA.wb <- waveband(c(315, 400), wb.name = "UVA")
+UVB.wb <- waveband(c(280, 315), wb.name = "UVB")
+UVC.wb <- waveband(c(100, 280), wb.name = "UVC")
+UV.wb  <- waveband(c(100, 400), wb.name =  "UV")
+```
+
+A number of wavebands are already available in the package, with different definitions (see the help page of each for more details):
+
+```{r}
+PAR()
+
+UVB("ISO")
+UVB("medical")
+
+UVA("ISO")
+UVA("none")
+
+Blue("ISO")
+Blue("Sellaro")
+Blue("RS")
+
+Red("ISO")
+Red("Smith10")
+
+Far_red("Smith10")
+Far_red("Sellaro")
+```
+
+**The wavebands can be applied to a spectrum to calculate the irradiance over a specific waveband:**
+
+```{r}
+autoplot(sun.spct)
+
+q_irrad(sun.spct, PAR()) * 1e6
+
+q_irrad(sun.spct, Blue("Sellaro"))* 1e6
+q_irrad(sun.spct, Green("Sellaro"))* 1e6
+q_irrad(sun.spct, Red("Sellaro"))* 1e6
+q_irrad(sun.spct, Far_red("Sellaro"))* 1e6
+```
+
+**In a similar manner, photon ratios can be calculated:**
+
+```{r}
+q_ratio(sun.spct, UVA("ISO"), PAR())
+q_ratio(sun.spct, Blue("Sellaro"), Red("Sellaro"))
+q_ratio(sun.spct, Red("Sellaro"), Far_red("Sellaro"))
+```
+    
+***      
+  
+# Applying a spectral weighing function 
+
+**Applying a spectral weighing function is very easy with this package:**
+
+```{r}
+sun.spct * CIE()
+
+autoplot(sun.spct)
+autoplot(sun.spct * CIE()) # Erythema (skin) damage
+autoplot(sun.spct * DNA_N()) # Naked DNA Damage
+autoplot(sun.spct * FLAV()) # # Rate of accumulation of flavonoids
+autoplot(sun.spct * GEN.G()) # Generalized plant action spectrum (0 at 300nm)
+autoplot(sun.spct * PG()) # Plant growth 
+```
+
+    
+***      
+  
+# Filters & lamps
+
+**1: Filters**
+
+Package **photobiologyFilters** is a collection of spectral transmittance data for more than **300 filters** measured in our lab, by collaborators or for which data have been made available by the suppliers for inclusion in this package.
+   
+   
+A list of the available spectra:
+```{r, echo = FALSE}
+library(photobiologyFilters)
+names(filters.mspct)
+```
+
+Filters can be accessed based on specific criteria
+
+```{r}
+all_filter_accessors
+```
+
+For example, all filters made of polyesters:
+```{r}
+polyester_filters
+```
+
+We can plot each filter, or multiple ones:
+```{r}
+autoplot(filters.mspct$MIDOPT_LP500)
+
+autoplot(filters.mspct[c("Schott_UG1", "Schott_UG11")], 
+         range = c(200, 900),
+         annotations = c("+", "boundaries"), 
+         span = 11)
+```
+
+In the same way as for the spectral weighing function, we can apply a filter to a spectum:
+```{r}
+autoplot(sun.spct)
+autoplot(sun.spct * filters.mspct$MIDOPT_LP500)
+autoplot(sun.spct * filters.mspct$Schott_UG1)
+```
+
+    
+***     
+  
+**2: Lamps**
+
+The package **PhotobiologyLamps** contains spectral emission data for LED, fluorescent, incandescent and other lamps. Spectra for light emitting diodes (LEDs) are included in package **PhotobioloyLEDs**.
+
+```{r, echo = FALSE}
+library(photobiologyLamps)
+library(photobiologyLEDs)
+```
+
+```{r}
+names(lamps.mspct)
+names(leds.mspct)
+```
+
+
+```{r}
+autoplot(lamps.mspct$Airam.CF.Spiraali.14W.3000K, annotations = c("+", "title:what"))
+autoplot(lamps.mspct$Osram.LED.8W.2700K, annotations = c("+", "title:what"))
+autoplot(lamps.mspct$Generic.Inc.bulb.60W, annotations = c("+", "title:what"))
+autoplot(lamps.mspct$Valoya.LED.B50.AP67.LED.grow.lamp, annotations = c("+", "title:what"))
+
+autoplot(leds.mspct$Agilent_HLMP_DJ32, annotations = c("+", "title:what"))
+```
+
+    
+***     
+  
+# Sun calculations and astronomy
+
+**1. Solar angles**
+
+Solar angles are useful to know where does most of the radiation comes from. They depends on date, time, and location.
+
+![](figs/solAngles.png)
+
+First the latitude (+ = N | - = S) and longitude (+ = E | - = W) have to be entered in decimals in a data frame. The address is a personal note (does not affect calculations).
+
+```{r}
+my.geocode <- data.frame(lat = 50.05, lon = 19.94, address = "Krakow")
+angles <- sun_angles(time = as.POSIXct("2021-07-03 14:45:00"), geocode = my.geocode)
+angles
+
+angles$elevation
+angles$azimuth
+angles$declination
+angles$hour.angle
+```
+
+The relative air mass can be calculated as a function of solar elevation, as an empirical *estimate* of the length of the path of the sun beam through the Earth’s atmosphere. 
+```{r}
+relative_AM(c(80, 60, 40, 20))
+relative_AM(angles$elevation)
+```
+
+
+**2. Day calculations**
+
+Calculation of solar times depends on:
+
+* **Solar declination** (the tilt of the Earth compared to its annual orbit around the Sun).
+* **Equation of time** (which depend on the eccentricity of the Earth's orbit around the Sun).
+
+![](figs/timecals.png)
+
+Times of solar noon, sunrise, and sunset can be easily calculated based on date and location, as well as day and night length.
+```{r}
+sunrise_time(date = as.POSIXct("2021-07-03", tz = "UTC"), geocode = my.geocode)
+sunset_time(date = as.POSIXct("2021-07-03", tz = "UTC"), geocode = my.geocode)
+noon_time(date = as.POSIXct("2021-07-03", tz = "UTC"), geocode = my.geocode)
+day_length(date = as.POSIXct("2021-07-03", tz = "UTC"), geocode = my.geocode)
+night_length(date = as.POSIXct("2021-07-03", tz = "UTC"), geocode = my.geocode)
+```   
+
+
+More information can be found [here.](https://docs.r4photobiology.info/photobiology/articles/userguide-2-astronomy.html)
+
+***      
+       
+     
+     
+     
+     
+
